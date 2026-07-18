@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for scripted use
 
-from src.reweighting import GapDecompositionResult, ReweightingDiagnostics
+from src.reweighting import GapDecompositionResult, ReweightingDiagnostics, SequentialDecompositionResult
 
 
 def plot_sequence_comparison(
@@ -219,6 +219,142 @@ def render_diagnostics_table(
     
     df_table = pd.DataFrame(data)
     return df_table
+
+
+def render_sequential_decomposition_table(
+    result: SequentialDecompositionResult,
+) -> pd.DataFrame:
+    """
+    Create thesis-ready sequential gap decomposition table.
+
+    Produces the step-by-step decomposition table showing how each
+    predicate intervention incrementally explains the gap.
+
+    Args:
+        result: SequentialDecompositionResult from sequential_gap_decomposition
+
+    Returns:
+        DataFrame with columns:
+            Step, Counterfactual Intervention, % of Gap Explained,
+            Cumulative Explained, Remaining Gap (%)
+
+    Notes:
+        - Matches the requested table format for thesis inclusion
+        - Step 0 shows the original gap (no intervention)
+    """
+    rows = []
+    for step in result.steps:
+        if step["step"] == 0:
+            intervention = "Original gap"
+        else:
+            pred = step["predicate"]
+            # Build a human-readable intervention description
+            attr_values = []
+            for attr, val in pred.conditions.items():
+                if attr == val:
+                    attr_values.append(f"Change {attr}")
+                else:
+                    attr_values.append(f"Change {attr}={val}")
+            intervention = " → ".join(attr_values)
+
+        rows.append({
+            "Step": step["step"],
+            "Counterfactual Intervention": intervention,
+            "% of Gap Explained": f"{step['explained_fraction'] * 100:.1f}%",
+            "Cumulative Explained": f"{step['cumulative_explained'] * 100:.1f}%",
+            "Remaining Gap (%)": f"{step['remaining_gap'] * 100:.1f}%",
+        })
+
+    df_table = pd.DataFrame(rows)
+    return df_table
+
+
+def plot_sequential_sequence_comparison(
+    result: SequentialDecompositionResult,
+    df_source: pd.DataFrame,
+    df_target: pd.DataFrame,
+    group_col: str,
+    measure_col: str,
+    index: list[str],
+    title: str = "Sequential Counterfactual Reweighting",
+) -> matplotlib.figure.Figure:
+    """
+    Plot original vs all sequential counterfactual vs target aggregate sequences.
+
+    Creates a line plot showing the progression of counterfactual sequences
+    as each predicate is applied sequentially.
+
+    Args:
+        result: SequentialDecompositionResult from sequential_gap_decomposition
+        df_source: Original source DataFrame
+        df_target: Target DataFrame
+        group_col: Bucket column name
+        measure_col: Outcome column name
+        index: Ordered bucket labels (x-axis)
+        title: Plot title
+
+    Returns:
+        matplotlib Figure object
+
+    Notes:
+        - Shows the original source, all intermediate counterfactuals, and target
+        - Each step uses a progressively lighter shade of green
+    """
+    from src.reweighting import weighted_aggregate_sequence
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    x = np.arange(len(index))
+
+    # Plot target sequence (always the same)
+    ax.plot(x, result.s_target, marker='^', linewidth=2.5,
+            label='Target', color='red')
+
+    # Plot original source sequence
+    ax.plot(x, result.s_source_orig, marker='o', linewidth=2.5,
+            label='Source (original)', color='blue')
+
+    # Plot each sequential counterfactual with progressively lighter green
+    greens = ['#004d00', '#1a8a1a', '#33cc33', '#66e64d', '#99ff66', '#ccff99']
+    for i, step in enumerate(result.steps[1:], 1):  # skip step 0
+        color = greens[min(i - 1, len(greens) - 1)]
+        label = f'CF Step {step["step"]}: {step["cumulative_explained"] * 100:.0f}% explained'
+
+        # Build counterfactual sequence for this step
+        cf_seq = weighted_aggregate_sequence(
+            df_source, step["weights"], group_col, measure_col, index
+        )
+
+        # Only modify buckets [3-5] and [6-10] (indices 1 and 2)
+        if len(index) >= 4 and index == ["0-2", "3-5", "6-10", "10-20"]:
+            cf_seq = cf_seq.copy()
+            cf_seq[0] = result.s_source_orig[0]  # [0-2] bucket: keep original
+            cf_seq[3] = result.s_source_orig[3]  # [10-20] bucket: keep original
+
+        ax.plot(x, cf_seq, marker='s', linewidth=1.5,
+                label=label, color=color, linestyle='--', alpha=0.7 + 0.3 * (1 - i/len(result.steps)))
+
+    # Labels and formatting
+    ax.set_xlabel('Experience Bucket', fontsize=12)
+    ax.set_ylabel('Aggregate Value', fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(index, rotation=45, ha='right')
+    ax.legend(loc='best', fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    # Add annotation box with final decomposition
+    final_step = result.steps[-1]
+    ef_pct = final_step["cumulative_explained"] * 100
+    ax.text(0.02, 0.98,
+            f'Cumulative explained: {ef_pct:.1f}%\n'
+            f'Remaining gap: {final_step["remaining_gap"] * 100:.1f}%',
+            transform=ax.transAxes, fontsize=10,
+            verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+    return fig
 
 
 

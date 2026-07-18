@@ -42,12 +42,14 @@ CONFIG = {
 # ============================================================
 from src.data_loader import load_and_preprocess_data, split_groups, get_bucket_index
 from src.sdecho import run_sdecho
-from src.reweighting import select_predicate, compute_gap_decomposition
+from src.reweighting import select_predicate, compute_gap_decomposition, sequential_gap_decomposition
 from src.evaluation import removal_baseline, bootstrap_explained_fraction_ci
 from src.visualization import (
     plot_sequence_comparison,
     plot_gap_decomposition_bar,
-    render_diagnostics_table
+    render_diagnostics_table,
+    render_sequential_decomposition_table,
+    plot_sequential_sequence_comparison
 )
 
 
@@ -235,6 +237,39 @@ def main():
     diag_table = render_diagnostics_table(result.diagnostics)
     for _, row in diag_table.iterrows():
         print(f"  {row['Metric']:<35} {row['Value']}")
+    
+    # ============================================================
+    # STEP 11: Sequential Gap Decomposition (Top-5 Predicates)
+    # ============================================================
+    print("\n" + "=" * 70)
+    print("STEP 11: SEQUENTIAL GAP DECOMPOSITION")
+    print("=" * 70)
+    
+    # Take top 5 predicates for sequential decomposition
+    n_predicates = min(5, len(sdecho_results))
+    top_predicates = [r.predicate for r in sdecho_results[:n_predicates]]
+    
+    print(f"\n  Using top {n_predicates} predicates for sequential decomposition:")
+    for i, pred in enumerate(top_predicates, 1):
+        print(f"    #{i}: {pred}")
+    
+    # Compute sequential gap decomposition
+    seq_result = sequential_gap_decomposition(
+        df_A, df_B, top_predicates,
+        group_col=CONFIG["group_col"],
+        measure_col=CONFIG["measure_col"],
+        index=index,
+        min_cell_support=CONFIG["min_cell_support"],
+    )
+    
+    # Display the decomposition table
+    seq_table = render_sequential_decomposition_table(seq_result)
+    print(f"\n  SEQUENTIAL GAP DECOMPOSITION TABLE:")
+    print("  " + "-" * 85)
+    for _, row in seq_table.iterrows():
+        print(f"  {row['Step']:>4}  {row['Counterfactual Intervention']:<45} "
+              f"{row['% of Gap Explained']:>12}  {row['Cumulative Explained']:>15}  {row['Remaining Gap (%)']:>15}")
+    print("  " + "-" * 85)
     
     # ============================================================
     # Generate visualizations

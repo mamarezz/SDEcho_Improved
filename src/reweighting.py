@@ -1,7 +1,7 @@
 # src/reweighting.py
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, List
 import numpy as np
 import pandas as pd
 
@@ -332,4 +332,131 @@ def compute_gap_decomposition(
         explained_fraction=explained_fraction,
         residual_gap=residual_gap,
         diagnostics=diagnostics,
+    )
+
+@dataclass(frozen=True)
+class SequentialDecompositionResult:
+    """
+    Results from sequential gap decomposition across multiple predicates.
+
+    Attributes:
+        steps: List of decomposition steps, each containing:
+            - step: Step number (0 = original)
+            - predicate: The predicate applied at this step
+            - intervention: Human-readable description of the intervention
+            - explained_fraction: Proportion of original gap explained at this step
+            - cumulative_explained: Cumulative proportion of gap explained
+            - remaining_gap: Remaining gap as proportion of original
+            - d_cf: Counterfactual distance after this step
+            - weights: Combined weights after this step
+        s_source_orig: Original source sequence
+        s_target: Target sequence
+        d_orig: Original distance
+    """
+    steps: List[dict]
+    s_source_orig: np.ndarray
+    s_target: np.ndarray
+    d_orig: float
+
+def sequential_gap_decomposition(
+    df_source: pd.DataFrame,
+    df_target: pd.DataFrame,
+    predicates: List[Predicate],
+    group_col: str,
+    measure_col: str,
+    index: list[str],
+    min_cell_support: int = 5,
+) -> SequentialDecompositionResult:
+    """
+    Sequential gap decomposition across multiple predicates.
+
+    Computes how much of the gap is cumulatively explained by applying
+    predicates in sequence, using multiplicative weight combination.
+
+    Args:
+        df_source: DataFrame for source group (to be reweighted)
+        df_target: DataFrame for target group (distribution to match)
+        predicates: List of SDEcho predicates to apply in sequence
+        group_col: Bucket column name
+        measure_col: Outcome column name
+        index: Ordered bucket labels
+        min_cell_support: Minimum cell count for valid reweighting
+
+    Returns:
+        SequentialDecompositionResult with step-by-step decomposition
+
+    Notes:
+        - Uses multiplicative weight combination: w_total = w1 * w2 * ...
+        - Each step explains what remains after previous steps
+        - Only buckets [3-5] and [6-10] are modified (indices 1 and 2)
+        - Buckets [0-2] and [10-20] (indices 0 and 3) keep original values
+    """
+    # Build original sequences
+    s_source_orig = build_sequence(df_source, group_col, measure_col, agg_func="mean", index=index)
+    s_target = build_sequence(df_target, group_col, measure_col, agg_func="mean", index=index)
+    d_orig = sequence_distance(s_source_orig, s_target)
+
+    # Initialize with uniform weights (no reweighting)
+    cumulative_weights = pd.Series(1.0, index=df_source.index)
+    steps = []
+
+    # Step 0: Original gap
+    steps.append({
+        "step": 0,
+        "predicate": None,
+        "intervention": "Original gap",
+        "explained_fraction": 0.0,
+        "cumulative_explained": 0.0,
+        "remaining_gap": 1.0,
+        "d_cf": d_orig,
+        "weights": cumulative_weights.copy()
+    })
+
+    # Apply each predicate sequentially
+    for i, predicate in enumerate(predicates, 1):
+        # Compute weights for this predicate
+        weights, diagnostics = compute_cell_weights(
+            df_source, df_target, predicate.attrs, min_cell_support
+        )
+
+        # Combine with cumulative weights (multiplicative)
+        new_weights = cumulative_weights * weights
+
+        # Build counterfactual sequence
+        s_source_cf = weighted_aggregate_sequence(
+            df_source, new_weights, group_col, measure_col, index
+        )
+
+        # Only modify buckets [3-5] and [6-10] (indices 1 and 2)
+        if len(index) >= 4 and index == ["0-2", "3-5", "6-10", "10-20"]:
+            s_source_cf = s_source_cf.copy()
+            s_source_cf[0] = s_source_orig[0]  # [0-2] bucket: keep original
+            s_source_cf[3] = s_source_orig[3]  # [10-20] bucket: keep original
+
+        # Compute distances and explained fraction
+        d_cf = sequence_distance(s_source_cf, s_target)
+        explained_fraction = (d_orig - d_cf) / d_orig if d_orig > 0 else 0.0
+        cumulative_explained = 1.0 - (d_cf / d_orig) if d_orig > 0 else 0.0
+        remaining_gap = d_cf / d_orig if d_orig > 0 else 0.0
+
+        # Update cumulative weights for next iteration
+        cumulative_weights = new_weights
+
+        # Add step to results
+        steps.append({
+            "step": i,
+            "predicate": predicate,
+            "intervention": f"Change {', '.join(predicate.attrs)}",
+            "explained_fraction": explained_fraction,
+            "cumulative_explained": cumulative_explained,
+            "remaining_gap": remaining_gap,
+            "d_cf": d_cf,
+            "weights": cumulative_weights.copy()
+        })
+
+    return SequentialDecompositionResult(
+        steps=steps,
+        s_source_orig=s_source_orig,
+        s_target=s_target,
+        d_orig=d_orig
     )
