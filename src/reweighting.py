@@ -394,6 +394,7 @@ def sequential_gap_decomposition(
     # Build original sequences
     s_source_orig = build_sequence(df_source, group_col, measure_col, agg_func="mean", index=index)
     s_target = build_sequence(df_target, group_col, measure_col, agg_func="mean", index=index)
+    from src.sdecho import sequence_distance
     d_orig = sequence_distance(s_source_orig, s_target)
 
     # Initialize with uniform weights (no reweighting)

@@ -12,60 +12,85 @@ from src.reweighting import GapDecompositionResult, ReweightingDiagnostics, Sequ
 
 def plot_sequence_comparison(
     result: GapDecompositionResult, index: list[str], title: str,
+    group_a_name: str = "Group A", group_b_name: str = "Group B",
+    sequential_result: SequentialDecompositionResult = None,
 ) -> matplotlib.figure.Figure:
     """
     Plot original vs counterfactual vs target aggregate sequences.
-    
+
     Creates a line plot showing three sequences side by side:
-    - Source group's original sequence
-    - Source group's counterfactual sequence (after reweighting)
-    - Target group's sequence
-    
+    - Group A's original sequence
+    - Group A's counterfactual sequence (after reweighting)
+    - Group B's sequence
+
     Args:
         result: GapDecompositionResult from compute_gap_decomposition
         index: Ordered bucket labels (x-axis)
         title: Plot title
-    
+        group_a_name: Name for Group A (default: "Group A")
+        group_b_name: Name for Group B (default: "Group B")
+        sequential_result: SequentialDecompositionResult for showing cumulative fractions
+
     Returns:
         matplotlib Figure object
-    
+
     Notes:
         - Useful for visualizing how reweighting changes the source sequence
         - Shows whether counterfactual moves toward or away from target
     """
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
+    # Create figure with space for predicates at bottom
+    fig, ax = plt.subplots(figsize=(10, 7))
+
     x = np.arange(len(index))
-    
-    # Plot original source sequence
+
+    # Plot Group A original sequence
     ax.plot(x, result.s_source_orig, marker='o', linewidth=2,
-            label='Source (original)', color='blue')
-    
+            label=f'{group_a_name} (original)', color='blue')
+
     # Plot counterfactual sequence
     ax.plot(x, result.s_source_cf, marker='s', linewidth=2,
-            label='Source (counterfactual)', color='green', linestyle='--')
-    
-    # Plot target sequence
+            label=f'{group_a_name} (counterfactual)', color='green', linestyle='--')
+
+    # Plot Group B sequence
     ax.plot(x, result.s_target, marker='^', linewidth=2,
-            label='Target', color='red')
-    
+            label=f'{group_b_name}', color='red')
+
     # Labels and formatting
     ax.set_xlabel('Experience Bucket', fontsize=12)
-    ax.set_ylabel(f'Aggregate {result.predicate}', fontsize=12)
+    ax.set_ylabel('Mean Salary', fontsize=12)
     ax.set_title(title, fontsize=14, fontweight='bold')
     ax.set_xticks(x)
     ax.set_xticklabels(index, rotation=45, ha='right')
     ax.legend(loc='best', fontsize=10)
     ax.grid(True, alpha=0.3)
-    
+
     # Add annotation with explained fraction
     ef_pct = result.explained_fraction * 100
     ax.text(0.02, 0.98, f'Explained: {ef_pct:.1f}%\nResidual: {result.residual_gap:.2f}',
             transform=ax.transAxes, fontsize=10,
             verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-    
+
+    # Add sequential decomposition summary below plot
+    if sequential_result and sequential_result.steps:
+        # Build sequential explanation text from the actual sequential decomposition
+        pred_lines = []
+        for step in sequential_result.steps[1:]:  # Skip step 0 (original gap)
+            step_num = step["step"]
+            pred = step["predicate"]
+            cumulative_frac = step["cumulative_explained"] * 100
+            if pred is None:
+                pred_lines.append(f"#{step_num} Original gap: {cumulative_frac:.1f}%")
+            else:
+                pred_lines.append(f"#{step_num} {pred}: {cumulative_frac:.1f}%")
+
+        pred_text = "\n".join(pred_lines)
+        fig.text(0.5, -0.15, f"Sequential Gap Decomposition:\n{pred_text}",
+                fontsize=9, ha='center', va='top',
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+
     plt.tight_layout()
+    plt.subplots_adjust(bottom=0.25)
     return fig
 
 

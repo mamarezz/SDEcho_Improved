@@ -278,15 +278,18 @@ def main():
     print("Generating visualizations...")
     print("=" * 70)
     
-    # Plot 1: Sequence comparison
+    # Plot 1: Sequence comparison (use sequential decomposition results)
     fig1 = plot_sequence_comparison(
         result, index,
-        title=f"Salary by Experience: {CONFIG['subgroup_val1']} vs {CONFIG['subgroup_val2']}"
+        title=f"Salary by Experience: {CONFIG['subgroup_val1']} vs {CONFIG['subgroup_val2']}",
+        group_a_name=CONFIG['subgroup_val1'],
+        group_b_name=CONFIG['subgroup_val2'],
+        sequential_result=seq_result,
     )
     fig1.savefig("sequence_comparison.png", dpi=150, bbox_inches='tight')
     plt.close(fig1)
     print("  ✓ Saved: sequence_comparison.png")
-    
+
     # Plot 2: Gap decomposition bar
     fig2 = plot_gap_decomposition_bar(result)
     fig2.savefig("gap_decomposition.png", dpi=150, bbox_inches='tight')
