@@ -170,6 +170,8 @@ def main():
         min_cell_support=CONFIG["min_cell_support"],
     )
     
+    # Show which buckets are being reweighted
+    reweighted_labels = [index[i] for i in result.reweighted_buckets]
     print(f"\n  ┌──────────────────────────────────────────────────────┐")
     print(f"  │              GAP DECOMPOSITION RESULTS               │")
     print(f"  ├──────────────────────────────────────────────────────┤")
@@ -177,15 +179,17 @@ def main():
     print(f"  │  Counterfactual distance (d_cf):   {result.d_cf:>9.2f}          │")
     print(f"  │  Explained fraction:              {result.explained_fraction:>9.2%}          │")
     print(f"  │  Residual gap:                    {result.residual_gap:>9.2f}          │")
+    print(f"  │  Reweighted buckets:              {', '.join(reweighted_labels):<22}   │")
     print(f"  └──────────────────────────────────────────────────────┘")
     
     # Counterfactual sequence
     print(f"\n  Counterfactual sequence (reweighted A):")
     for i, bucket in enumerate(index):
+        reweighted = " (reweighted)" if i in result.reweighted_buckets else " (original)"
         diff_orig = seq_A_orig[i] - seq_B[i]
         diff_cf = result.s_source_cf[i] - seq_B[i]
         print(f"    {bucket:>6}: orig A={seq_A_orig[i]:>10,.0f}  cf A={result.s_source_cf[i]:>10,.0f}  B={seq_B[i]:>10,.0f}  "
-              f"orig diff={diff_orig:>+10,.0f}  cf diff={diff_cf:>+10,.0f}")
+              f"orig diff={diff_orig:>+10,.0f}  cf diff={diff_cf:>+10,.0f}{reweighted}")
     
     # ============================================================
     # Compare with removal baseline

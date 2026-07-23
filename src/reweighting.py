@@ -1,12 +1,13 @@
 # src/reweighting.py
 
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Tuple, List, Optional, Union
 import numpy as np
 import pandas as pd
 
 from src.predicates import Predicate
 from src.sequence_builder import build_sequence
+from src.sdecho import SDEchoResult
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,10 @@ class GapDecompositionResult:
         explained_fraction: Proportion of gap explained (d_orig - d_cf) / d_orig
         residual_gap: Remaining distance after reweighting
         diagnostics: Reweighting diagnostics
+        reweighted_buckets: List of bucket indices where counterfactual was applied
+        bucket_threshold: The threshold used to determine which buckets to reweight
+        bucket_selection_method: Method used for bucket selection
+        bucket_details: Per-bucket details showing abs and pct differences
     """
     predicate: Predicate
     attrs: list
@@ -57,6 +62,10 @@ class GapDecompositionResult:
     explained_fraction: float
     residual_gap: float
     diagnostics: ReweightingDiagnostics
+    reweighted_buckets: Optional[List[int]] = None
+    bucket_threshold: Optional[float] = None
+    bucket_selection_method: Optional[str] = None
+    bucket_details: Optional[List[dict]] = None
 
 
 def select_predicate(results: list[SDEchoResult], rank: int = 0) -> Predicate:
@@ -78,6 +87,179 @@ def select_predicate(results: list[SDEchoResult], rank: int = 0) -> Predicate:
             f"Rank {rank} requested but only {len(results)} predicates available"
         )
     return results[rank].predicate
+
+
+def _compute_salary_scale(seq_source: np.ndarray, seq_target: np.ndarray) -> float:
+    """
+    Compute a representative salary scale from the sequences.
+    
+    Uses the mean of max-min ranges across both sequences to get a sense
+    of what constitutes a 'large' vs 'small' difference for this comparison.
+    
+    Args:
+        seq_source: Source group sequence
+        seq_target: Target group sequence
+    
+    Returns:
+        Representative scale value (e.g., mean of max-min ranges)
+    """
+    range_source = np.max(seq_source) - np.min(seq_source)
+    range_target = np.max(seq_target) - np.min(seq_target)
+    return (range_source + range_target) / 2
+
+
+def identify_buckets_for_reweighting(
+    seq_source: np.ndarray,
+    seq_target: np.ndarray,
+    index: list[str],
+    method: str = "relative_and_absolute",
+    threshold_factor: float = 0.15,
+    min_absolute_difference: float = 10000,
+    min_percentage_difference: float = 5.0,
+) -> Tuple[List[int], float, List[dict]]:
+    """
+    Automatically identify which experience buckets require counterfactual computation.
+    
+    A bucket is considered to have a "meaningful difference" based on one of
+    several criteria. This avoids reweighting buckets where the sequences are
+    already similar.
+    
+    Args:
+        seq_source: Original aggregate sequence for source group
+        seq_target: Target group's aggregate sequence
+        index: Ordered bucket labels
+        method: Threshold method. Options:
+            - "relative_and_absolute" (default): A bucket is significant if
+              BOTH its absolute difference exceeds `min_absolute_difference` AND
+              its percentage difference (relative to the mean) exceeds
+              `min_percentage_difference`. This is the most robust approach
+              because it filters out both small-absolute differences on
+              large-salary buckets AND small-percentage differences.
+            - "absolute": Bucket is significant if absolute difference
+              exceeds threshold_factor * scale (where scale = mean of ranges).
+            - "percentage": Bucket is significant if |diff| / mean * 100
+              exceeds threshold_factor percent.
+            - "relative_threshold": Bucket is significant if its difference
+              exceeds threshold_factor * max_difference.
+            - "percentile": Bucket is significant if its difference exceeds
+              the given percentile of all differences.
+            - "all": All buckets are significant (reweight all).
+        threshold_factor: Used differently by each method:
+            - For "absolute": fraction of salary scale (default 0.15 = 15%)
+            - For "percentage": minimum percentage (default 5.0 = 5%)
+            - For "relative_threshold": fraction of max diff (default 0.1 = 10%)
+            - For "percentile": percentile value 0-1 (default ignored)
+        min_absolute_difference: Minimum absolute difference to consider
+            (default 10000, prevents including tiny diffs on large salaries).
+        min_percentage_difference: Minimum percentage difference relative to
+            the mean of the two groups (default 5.0 = 5%).
+    
+    Returns:
+        Tuple of (reweighted_indices, threshold_value, bucket_details):
+            - reweighted_indices: List of bucket indices to apply counterfactual
+            - threshold_value: The actual threshold used (for reporting)
+            - bucket_details: List of dicts with per-bucket analysis
+    
+    Examples:
+        >>> seq_A = np.array([135156, 131692, 173414, 205397])  # 25-34
+        >>> seq_B = np.array([123917, 194521, 212527, 197010])  # 35-44
+        >>> indices, thresh, details = identify_buckets_for_reweighting(seq_A, seq_B,
+        ...     ["0-2", "3-5", "6-10", "10-20"])
+        >>> [index[i] for i in indices]  # Only 3-5 and 6-10
+        ['3-5', '6-10']
+    """
+    # Compute absolute differences per bucket
+    abs_diffs = np.abs(seq_source - seq_target)
+    
+    # Compute percentage differences per bucket
+    # (relative to the mean of the two values)
+    means = (np.abs(seq_source) + np.abs(seq_target)) / 2
+    means = np.where(means == 0, 1.0, means)  # Avoid division by zero
+    pct_diffs = (abs_diffs / means) * 100
+    
+    # Build per-bucket details for reporting
+    bucket_details = []
+    for i, bucket in enumerate(index):
+        bucket_details.append({
+            "index": i,
+            "label": bucket,
+            "abs_diff": float(abs_diffs[i]),
+            "pct_diff": float(pct_diffs[i]),
+            "value_source": float(seq_source[i]),
+            "value_target": float(seq_target[i]),
+        })
+    
+    if method == "all":
+        return list(range(len(index))), 0.0, bucket_details
+    
+    if method == "absolute":
+        # Threshold based on salary scale
+        scale = _compute_salary_scale(seq_source, seq_target)
+        threshold = scale * threshold_factor
+        threshold = max(threshold, min_absolute_difference)
+        reweighted_indices = [
+            i for i in range(len(index))
+            if abs_diffs[i] > threshold
+        ]
+        
+    elif method == "percentage":
+        # Threshold based on percentage difference
+        threshold = threshold_factor  # e.g., 5.0 = 5%
+        reweighted_indices = [
+            i for i in range(len(index))
+            if pct_diffs[i] > threshold
+        ]
+        
+    elif method == "percentile":
+        # Use a percentile of absolute differences as threshold
+        threshold = float(np.percentile(abs_diffs, threshold_factor * 100))
+        reweighted_indices = [
+            i for i in range(len(index))
+            if abs_diffs[i] > threshold
+        ]
+        
+    elif method == "relative_threshold":
+        # Old method: based on max difference
+        max_diff = np.max(abs_diffs)
+        if max_diff == 0:
+            return list(range(len(index))), 0.0, bucket_details
+        threshold = max_diff * threshold_factor
+        threshold = max(threshold, min_absolute_difference)
+        reweighted_indices = [
+            i for i in range(len(index))
+            if abs_diffs[i] > threshold
+        ]
+        
+    else:
+        # Default: "relative_and_absolute" - BOTH must be significant.
+        # 
+        # Rationale: A bucket should be reweighted only when the difference is
+        # meaningful in BOTH absolute terms AND relative terms.
+        # 
+        # - Absolute check prevents reweighting tiny differences on large scales
+        #   (e.g., $8k diff on $200k salary = 4% — not worth touching)
+        # - Percentage check prevents reweighting large absolute differences 
+        #   that are small relative to the values (e.g., $50k diff on $1M salary)
+        #
+        # Default thresholds:
+        #   min_absolute_difference = $10,000
+        #   min_percentage_difference = 5%
+        
+        scale = _compute_salary_scale(seq_source, seq_target)
+        abs_threshold = max(scale * 0.10, min_absolute_difference)
+        threshold = abs_threshold
+        
+        reweighted_indices = [
+            i for i in range(len(index))
+            if abs_diffs[i] > abs_threshold and pct_diffs[i] > min_percentage_difference
+        ]
+    
+    # Fallback: if no buckets meet the threshold, include all buckets
+    # (to avoid silently doing nothing - better to reweight everything than nothing)
+    if len(reweighted_indices) == 0:
+        reweighted_indices = list(range(len(index)))
+    
+    return reweighted_indices, threshold, bucket_details
 
 
 def compute_cell_weights(
@@ -111,17 +293,10 @@ def compute_cell_weights(
     
     Complexity:
         O(n_source + n_target) — linear in dataset size
-    
-    Example:
-        >>> weights, diag = compute_cell_weights(
-        ...     df_A, df_B, ["Country"], min_cell_support=5
-        ... )
-        >>> # weights is NaN for rare cells, valid values are p_B(x) / p_A(x)
     """
     n_source = len(df_source)
     
     # Step 1: Compute empirical cell proportions in both groups
-    # source proportions
     source_counts = df_source.groupby(attrs).size()
     source_props = source_counts / n_source
     
@@ -135,7 +310,6 @@ def compute_cell_weights(
     
     common_cells = source_cells & target_cells
     
-    # Cells to drop: not in common, or below min support in either group
     cells_no_overlap = source_cells - target_cells
     cells_below_support = {
         cell for cell in common_cells
@@ -217,28 +391,20 @@ def weighted_aggregate_sequence(
         - Uses only tuples with non-NaN weights
         - If a bucket has no valid tuples, returns 0
         - Assumes agg_func = "mean" (weighted mean)
-    
-    Complexity:
-        O(n) where n = len(df)
     """
-    # Filter to rows with valid weights
     valid_mask = weights.notna()
     df_valid = df.loc[valid_mask].copy()
     w_valid = weights.loc[valid_mask]
     
     if len(df_valid) == 0:
-        # No valid data, return zeros
         return np.zeros(len(index), dtype=float)
     
-    # Attach weights to df
     df_valid = df_valid.assign(_weight=w_valid)
     
-    # Compute weighted mean per bucket
     weighted_sums = df_valid.groupby(group_col).apply(
         lambda g: np.average(g[measure_col], weights=g['_weight'])
     )
     
-    # Reindex and fill missing with 0
     sequence = weighted_sums.reindex(index).fillna(0)
     
     return sequence.to_numpy(dtype=float)
@@ -248,6 +414,11 @@ def compute_gap_decomposition(
     df_source: pd.DataFrame, df_target: pd.DataFrame,
     predicate: Predicate, group_col: str, measure_col: str,
     index: list[str], min_cell_support: int = 5,
+    reweight_method: str = "relative_and_absolute",
+    reweight_threshold_factor: float = 0.15,
+    reweight_min_difference: float = 10000,
+    reweight_min_percentage: float = 5.0,
+    reweight_buckets: Optional[Union[str, List[int]]] = "dynamic",
 ) -> GapDecompositionResult:
     """
     Full Stage 7-10 orchestration: reweighting and gap decomposition.
@@ -264,6 +435,15 @@ def compute_gap_decomposition(
         measure_col: Outcome column name
         index: Ordered bucket labels
         min_cell_support: Minimum cell count for valid reweighting
+        reweight_method: Method for selecting which buckets to reweight.
+            See identify_buckets_for_reweighting() for details.
+        reweight_threshold_factor: Threshold factor (interpretation depends on method).
+        reweight_min_difference: Minimum absolute difference to consider significant.
+        reweight_min_percentage: Minimum percentage difference to consider significant.
+        reweight_buckets: Override for bucket selection. Can be:
+            - "dynamic" (default): Use automatic detection
+            - A list of bucket indices (e.g., [1, 2] for [3-5] and [6-10])
+            - "all": Reweight all buckets
     
     Returns:
         GapDecompositionResult with original/counterfactual sequences,
@@ -273,16 +453,6 @@ def compute_gap_decomposition(
         - Does NOT modify df_source or df_target (copies are made internally)
         - Does NOT perform causal inference (descriptive decomposition only)
         - Explained fraction < 0 is valid and should be reported, not discarded
-    
-    Complexity:
-        O(n_source + n_target) — linear in dataset size
-    
-    Example:
-        >>> result = compute_gap_decomposition(
-        ...     df_A, df_B, predicate, "YearsExpBucket", "ConvertedCompYearly",
-        ...     ["0-2", "3-5", "6-10", "10-20"]
-        ... )
-        >>> print(f"Explained fraction: {result.explained_fraction:.2%}")
     """
     attrs = predicate.attrs
     
@@ -300,13 +470,31 @@ def compute_gap_decomposition(
         df_source, weights, group_col, measure_col, index
     )
     
-    # Only compute counterfactuals for buckets [3-5] and [6-10] (indices 1 and 2)
-    # For buckets [0-2] and [10-20] (indices 0 and 3), keep original values
-    # since there's no difference to explain in those buckets
-    if len(index) >= 4 and index == ["0-2", "3-5", "6-10", "10-20"]:
-        s_source_cf = s_source_cf.copy()  # Ensure we don't modify original
-        s_source_cf[0] = s_source_orig[0]  # [0-2] bucket: keep original
-        s_source_cf[3] = s_source_orig[3]  # [10-20] bucket: keep original
+    # Stage 8b: Determine which buckets to apply counterfactual reweighting
+    if isinstance(reweight_buckets, list):
+        buckets_to_reweight = reweight_buckets
+        threshold_used = 0.0
+        bucket_details = []
+    elif reweight_buckets == "dynamic":
+        buckets_to_reweight, threshold_used, bucket_details = identify_buckets_for_reweighting(
+            s_source_orig, s_target, index,
+            method=reweight_method,
+            threshold_factor=reweight_threshold_factor,
+            min_absolute_difference=reweight_min_difference,
+            min_percentage_difference=reweight_min_percentage,
+        )
+    elif reweight_buckets == "all":
+        buckets_to_reweight = list(range(len(index)))
+        threshold_used = 0.0
+        bucket_details = []
+    else:
+        raise ValueError(f"Unknown reweight_buckets value: {reweight_buckets}")
+    
+    # For buckets NOT in the reweight set, use original values
+    s_source_cf = s_source_cf.copy()
+    for i in range(len(index)):
+        if i not in buckets_to_reweight:
+            s_source_cf[i] = s_source_orig[i]
     
     # Stage 9: Compute distances
     from src.sdecho import sequence_distance
@@ -315,7 +503,7 @@ def compute_gap_decomposition(
     
     # Stage 10: Compute explained fraction
     if d_orig == 0:
-        explained_fraction = 0.0  # undefined, set to 0
+        explained_fraction = 0.0
     else:
         explained_fraction = (d_orig - d_cf) / d_orig
     
@@ -332,7 +520,12 @@ def compute_gap_decomposition(
         explained_fraction=explained_fraction,
         residual_gap=residual_gap,
         diagnostics=diagnostics,
+        reweighted_buckets=buckets_to_reweight,
+        bucket_threshold=threshold_used,
+        bucket_selection_method=reweight_method,
+        bucket_details=bucket_details,
     )
+
 
 @dataclass(frozen=True)
 class SequentialDecompositionResult:
@@ -349,14 +542,18 @@ class SequentialDecompositionResult:
             - remaining_gap: Remaining gap as proportion of original
             - d_cf: Counterfactual distance after this step
             - weights: Combined weights after this step
+            - reweighted_buckets: Bucket indices reweighted at this step
         s_source_orig: Original source sequence
         s_target: Target sequence
         d_orig: Original distance
+        reweighted_buckets: List of bucket indices where counterfactual was applied
     """
     steps: List[dict]
     s_source_orig: np.ndarray
     s_target: np.ndarray
     d_orig: float
+    reweighted_buckets: Optional[List[int]] = None
+
 
 def sequential_gap_decomposition(
     df_source: pd.DataFrame,
@@ -366,6 +563,11 @@ def sequential_gap_decomposition(
     measure_col: str,
     index: list[str],
     min_cell_support: int = 5,
+    reweight_method: str = "relative_and_absolute",
+    reweight_threshold_factor: float = 0.15,
+    reweight_min_difference: float = 10000,
+    reweight_min_percentage: float = 5.0,
+    reweight_buckets: Optional[Union[str, List[int]]] = "dynamic",
 ) -> SequentialDecompositionResult:
     """
     Sequential gap decomposition across multiple predicates.
@@ -381,15 +583,17 @@ def sequential_gap_decomposition(
         measure_col: Outcome column name
         index: Ordered bucket labels
         min_cell_support: Minimum cell count for valid reweighting
+        reweight_method: Method for selecting which buckets to reweight
+        reweight_threshold_factor: Threshold factor for bucket selection
+        reweight_min_difference: Minimum absolute difference to consider significant
+        reweight_min_percentage: Minimum percentage difference to consider significant
+        reweight_buckets: Override for bucket selection:
+            - "dynamic" (default): Use automatic detection
+            - A list of bucket indices (e.g., [1, 2] for [3-5] and [6-10])
+            - "all": Reweight all buckets
 
     Returns:
         SequentialDecompositionResult with step-by-step decomposition
-
-    Notes:
-        - Uses multiplicative weight combination: w_total = w1 * w2 * ...
-        - Each step explains what remains after previous steps
-        - Only buckets [3-5] and [6-10] are modified (indices 1 and 2)
-        - Buckets [0-2] and [10-20] (indices 0 and 3) keep original values
     """
     # Build original sequences
     s_source_orig = build_sequence(df_source, group_col, measure_col, agg_func="mean", index=index)
@@ -397,7 +601,22 @@ def sequential_gap_decomposition(
     from src.sdecho import sequence_distance
     d_orig = sequence_distance(s_source_orig, s_target)
 
-    # Initialize with uniform weights (no reweighting)
+    # Determine which buckets to apply counterfactual reweighting
+    if isinstance(reweight_buckets, list):
+        buckets_to_reweight = reweight_buckets
+    elif reweight_buckets == "dynamic":
+        buckets_to_reweight, _, _ = identify_buckets_for_reweighting(
+            s_source_orig, s_target, index,
+            method=reweight_method,
+            threshold_factor=reweight_threshold_factor,
+            min_absolute_difference=reweight_min_difference,
+            min_percentage_difference=reweight_min_percentage,
+        )
+    elif reweight_buckets == "all":
+        buckets_to_reweight = list(range(len(index)))
+    else:
+        raise ValueError(f"Unknown reweight_buckets value: {reweight_buckets}")
+
     cumulative_weights = pd.Series(1.0, index=df_source.index)
     steps = []
 
@@ -410,40 +629,34 @@ def sequential_gap_decomposition(
         "cumulative_explained": 0.0,
         "remaining_gap": 1.0,
         "d_cf": d_orig,
-        "weights": cumulative_weights.copy()
+        "weights": cumulative_weights.copy(),
+        "reweighted_buckets": buckets_to_reweight,
     })
 
     # Apply each predicate sequentially
     for i, predicate in enumerate(predicates, 1):
-        # Compute weights for this predicate
         weights, diagnostics = compute_cell_weights(
             df_source, df_target, predicate.attrs, min_cell_support
         )
 
-        # Combine with cumulative weights (multiplicative)
         new_weights = cumulative_weights * weights
 
-        # Build counterfactual sequence
         s_source_cf = weighted_aggregate_sequence(
-            df_source, new_weights, group_col, measure_col, index
-        )
+            df_source, weights, group_col, measure_col, index
+        ).copy()
 
-        # Only modify buckets [3-5] and [6-10] (indices 1 and 2)
-        if len(index) >= 4 and index == ["0-2", "3-5", "6-10", "10-20"]:
-            s_source_cf = s_source_cf.copy()
-            s_source_cf[0] = s_source_orig[0]  # [0-2] bucket: keep original
-            s_source_cf[3] = s_source_orig[3]  # [10-20] bucket: keep original
+        # Only modify buckets in the reweight set
+        for j in range(len(index)):
+            if j not in buckets_to_reweight:
+                s_source_cf[j] = s_source_orig[j]
 
-        # Compute distances and explained fraction
         d_cf = sequence_distance(s_source_cf, s_target)
         explained_fraction = (d_orig - d_cf) / d_orig if d_orig > 0 else 0.0
         cumulative_explained = 1.0 - (d_cf / d_orig) if d_orig > 0 else 0.0
         remaining_gap = d_cf / d_orig if d_orig > 0 else 0.0
 
-        # Update cumulative weights for next iteration
         cumulative_weights = new_weights
 
-        # Add step to results
         steps.append({
             "step": i,
             "predicate": predicate,
@@ -452,12 +665,14 @@ def sequential_gap_decomposition(
             "cumulative_explained": cumulative_explained,
             "remaining_gap": remaining_gap,
             "d_cf": d_cf,
-            "weights": cumulative_weights.copy()
+            "weights": cumulative_weights.copy(),
+            "reweighted_buckets": buckets_to_reweight,
         })
 
     return SequentialDecompositionResult(
         steps=steps,
         s_source_orig=s_source_orig,
         s_target=s_target,
-        d_orig=d_orig
+        d_orig=d_orig,
+        reweighted_buckets=buckets_to_reweight,
     )

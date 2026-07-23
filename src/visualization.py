@@ -64,9 +64,14 @@ def plot_sequence_comparison(
     ax.legend(loc='best', fontsize=10)
     ax.grid(True, alpha=0.3)
 
-    # Add annotation with explained fraction
+    # Add annotation with explained fraction and reweighted buckets info
     ef_pct = result.explained_fraction * 100
-    ax.text(0.02, 0.98, f'Explained: {ef_pct:.1f}%\nResidual: {result.residual_gap:.2f}',
+    reweight_buckets_str = ""
+    if result.reweighted_buckets is not None:
+        bucket_labels = [index[i] for i in result.reweighted_buckets]
+        reweight_buckets_str = f"\nReweighted: {', '.join(bucket_labels)}"
+    annotation_text = f'Explained: {ef_pct:.1f}%\nResidual: {result.residual_gap:.2f}{reweight_buckets_str}'
+    ax.text(0.02, 0.98, annotation_text,
             transform=ax.transAxes, fontsize=10,
             verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -350,11 +355,15 @@ def plot_sequential_sequence_comparison(
             df_source, step["weights"], group_col, measure_col, index
         )
 
-        # Only modify buckets [3-5] and [6-10] (indices 1 and 2)
-        if len(index) >= 4 and index == ["0-2", "3-5", "6-10", "10-20"]:
-            cf_seq = cf_seq.copy()
-            cf_seq[0] = result.s_source_orig[0]  # [0-2] bucket: keep original
-            cf_seq[3] = result.s_source_orig[3]  # [10-20] bucket: keep original
+        # Only modify buckets in the reweight set
+        # Buckets NOT in the set keep original values
+        reweighted_buckets = step.get("reweighted_buckets", result.reweighted_buckets)
+        if reweighted_buckets is None:
+            reweighted_buckets = list(range(len(index)))  # fallback: all buckets
+        cf_seq = cf_seq.copy()
+        for j in range(len(index)):
+            if j not in reweighted_buckets:
+                cf_seq[j] = result.s_source_orig[j]
 
         ax.plot(x, cf_seq, marker='s', linewidth=1.5,
                 label=label, color=color, linestyle='--', alpha=0.7 + 0.3 * (1 - i/len(result.steps)))
