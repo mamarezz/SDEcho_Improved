@@ -113,7 +113,7 @@ def identify_buckets_for_reweighting(
     seq_target: np.ndarray,
     index: list[str],
     method: str = "relative_and_absolute",
-    threshold_factor: float = 0.15,
+    threshold_factor: float = 0.18,
     min_absolute_difference: float = 10000,
     min_percentage_difference: float = 5.0,
 ) -> Tuple[List[int], float, List[dict]]:
@@ -241,12 +241,22 @@ def identify_buckets_for_reweighting(
         # - Percentage check prevents reweighting large absolute differences 
         #   that are small relative to the values (e.g., $50k diff on $1M salary)
         #
+        # The absolute threshold is based on the MAXIMUM difference across buckets,
+        # not the salary scale. This ensures the threshold is relative to the
+        # actual gaps being compared, making it data-adaptive.
+        # Default: threshold_factor=0.18 means a bucket must have a difference
+        # at least 18% of the largest bucket difference to be reweighted.
+        #
         # Default thresholds:
-        #   min_absolute_difference = $10,000
+        #   reweight_threshold_factor = 0.18  (18% of max diff)
+        #   min_absolute_difference = $10,000 (floor, prevents tiny diffs)
         #   min_percentage_difference = 5%
         
-        scale = _compute_salary_scale(seq_source, seq_target)
-        abs_threshold = max(scale * 0.10, min_absolute_difference)
+        max_diff = np.max(abs_diffs)
+        if max_diff == 0:
+            return list(range(len(index))), 0.0, bucket_details
+        
+        abs_threshold = max(max_diff * threshold_factor, min_absolute_difference)
         threshold = abs_threshold
         
         reweighted_indices = [
@@ -415,7 +425,7 @@ def compute_gap_decomposition(
     predicate: Predicate, group_col: str, measure_col: str,
     index: list[str], min_cell_support: int = 5,
     reweight_method: str = "relative_and_absolute",
-    reweight_threshold_factor: float = 0.15,
+    reweight_threshold_factor: float = 0.18,
     reweight_min_difference: float = 10000,
     reweight_min_percentage: float = 5.0,
     reweight_buckets: Optional[Union[str, List[int]]] = "dynamic",
@@ -564,7 +574,7 @@ def sequential_gap_decomposition(
     index: list[str],
     min_cell_support: int = 5,
     reweight_method: str = "relative_and_absolute",
-    reweight_threshold_factor: float = 0.15,
+    reweight_threshold_factor: float = 0.18,
     reweight_min_difference: float = 10000,
     reweight_min_percentage: float = 5.0,
     reweight_buckets: Optional[Union[str, List[int]]] = "dynamic",

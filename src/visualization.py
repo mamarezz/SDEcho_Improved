@@ -70,7 +70,8 @@ def plot_sequence_comparison(
     if result.reweighted_buckets is not None:
         bucket_labels = [index[i] for i in result.reweighted_buckets]
         reweight_buckets_str = f"\nReweighted: {', '.join(bucket_labels)}"
-    annotation_text = f'Explained: {ef_pct:.1f}%\nResidual: {result.residual_gap:.2f}{reweight_buckets_str}'
+    residual_pct = (result.residual_gap / result.d_orig) * 100
+    annotation_text = f'Explained: {ef_pct:.1f}%\nResidual: {residual_pct:.1f}%{reweight_buckets_str}'
     ax.text(0.02, 0.98, annotation_text,
             transform=ax.transAxes, fontsize=10,
             verticalalignment='top',
