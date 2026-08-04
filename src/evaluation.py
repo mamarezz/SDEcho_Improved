@@ -118,12 +118,12 @@ def bootstrap_explained_fraction_ci(
             n=len(df_source),
             replace=True,
             random_state=int(rng.integers(0, np.iinfo(np.int32).max)),
-        )
+        ).reset_index(drop=True)
         df_target_boot = df_target.sample(
             n=len(df_target),
             replace=True,
             random_state=int(rng.integers(0, np.iinfo(np.int32).max)),
-        )
+        ).reset_index(drop=True)
         
         try:
             result = compute_gap_decomposition(
