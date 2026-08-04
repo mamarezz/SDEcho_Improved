@@ -71,7 +71,9 @@ def bootstrap_explained_fraction_ci(
     df_source: pd.DataFrame, df_target: pd.DataFrame,
     predicate: Predicate, group_col: str, measure_col: str,
     index: list[str], n_bootstrap: int = 1000, ci: float = 0.95,
-) -> Tuple[float, float]:
+    min_cell_support: int = 5, random_state: int | None = None,
+    return_diagnostics: bool = False,
+) -> tuple:
     """
     Bootstrap confidence interval for the explained fraction.
     
@@ -87,9 +89,14 @@ def bootstrap_explained_fraction_ci(
         index: Ordered bucket labels
         n_bootstrap: Number of bootstrap samples
         ci: Confidence level (e.g., 0.95 for 95% CI)
+        min_cell_support: Minimum common-support cell count used by reweighting
+        random_state: Optional seed for reproducible bootstrap intervals
+        return_diagnostics: If True, return lower, upper, n_valid, n_failed
     
     Returns:
-        Tuple of (lower_bound, upper_bound) for the CI
+        Tuple of (lower_bound, upper_bound) for the CI by default.
+        If return_diagnostics=True, returns
+        (lower_bound, upper_bound, n_valid, n_failed).
     
     Notes:
         - Uses percentile method (not bias-corrected)
@@ -101,24 +108,38 @@ def bootstrap_explained_fraction_ci(
     """
     from src.reweighting import compute_gap_decomposition
     
+    rng = np.random.default_rng(random_state)
     bootstrap_fractions = []
+    n_failed = 0
     
     for _ in range(n_bootstrap):
         # Resample with replacement from each group
-        df_source_boot = df_source.sample(n=len(df_source), replace=True, random_state=None)
-        df_target_boot = df_target.sample(n=len(df_target), replace=True, random_state=None)
+        df_source_boot = df_source.sample(
+            n=len(df_source),
+            replace=True,
+            random_state=int(rng.integers(0, np.iinfo(np.int32).max)),
+        )
+        df_target_boot = df_target.sample(
+            n=len(df_target),
+            replace=True,
+            random_state=int(rng.integers(0, np.iinfo(np.int32).max)),
+        )
         
         try:
             result = compute_gap_decomposition(
                 df_source_boot, df_target_boot, predicate,
-                group_col, measure_col, index
+                group_col, measure_col, index,
+                min_cell_support=min_cell_support,
             )
             bootstrap_fractions.append(result.explained_fraction)
         except Exception:
             # Skip failed bootstrap samples (e.g., empty groups)
+            n_failed += 1
             continue
     
     if len(bootstrap_fractions) == 0:
+        if return_diagnostics:
+            return (0.0, 0.0, 0, n_failed)
         return (0.0, 0.0)
     
     # Compute percentile-based CI
@@ -126,6 +147,8 @@ def bootstrap_explained_fraction_ci(
     lower = np.percentile(bootstrap_fractions, 100 * alpha / 2)
     upper = np.percentile(bootstrap_fractions, 100 * (1 - alpha / 2))
     
+    if return_diagnostics:
+        return (float(lower), float(upper), len(bootstrap_fractions), n_failed)
     return (float(lower), float(upper))
 
 
@@ -157,36 +180,36 @@ def generate_synthetic_dataset(
         >>> result = compute_gap_decomposition(df_A, df_B, predicate, ...)
         >>> # result.explained_fraction should be close to gt
     """
-    np.random.seed(seed)
-    
-    # Simplified synthetic example:
-    # Two groups, two buckets, one binary covariate
-    
-    # Bucket values (outcomes)
+    if not 0.0 <= effect_size <= 1.0:
+        raise ValueError("effect_size must be between 0 and 1.")
+
+    rng = np.random.default_rng(seed)
+
     bucket_vals = {0: 100.0, 1: 200.0}
-    
-    # Group A: covariate distribution (e.g., 80% cov=0, 20% cov=1)
+    covariate_effect = 100.0
     p_A = np.array([0.8, 0.2])
-    
-    # Group B: covariate distribution (e.g., 20% cov=0, 80% cov=1)
-    # The effect_size determines how much this compositional difference explains
-    p_B = np.array([0.2, 0.8])
-    
-    # Generate tuples for group A
-    buckets_A = np.random.choice([0, 1], size=n_per_group, p=[0.5, 0.5])
-    covariates_A = np.random.choice([0, 1], size=n_per_group, p=p_A)
-    outcomes_A = np.array([bucket_vals[b] + np.random.normal(0, 10) for b in buckets_A])
-    
-    # Generate tuples for group B
-    # Add additional "residual" difference to achieve desired effect_size
-    buckets_B = np.random.choice([0, 1], size=n_per_group, p=[0.5, 0.5])
-    covariates_B = np.random.choice([0, 1], size=n_per_group, p=p_B)
-    
-    # Residual effect: scale outcomes by effect_size
-    residual_scale = 1 - effect_size
+    p_B = p_A if effect_size == 0 else np.array([0.2, 0.8])
+
+    compositional_gap = covariate_effect * (p_B[1] - p_A[1])
+    if effect_size == 0:
+        residual_gap = abs(compositional_gap) if compositional_gap != 0 else 60.0
+    elif effect_size == 1:
+        residual_gap = 0.0
+    else:
+        residual_gap = abs(compositional_gap) * (1.0 / effect_size - 1.0)
+
+    buckets_A = rng.choice([0, 1], size=n_per_group, p=[0.5, 0.5])
+    covariates_A = rng.choice([0, 1], size=n_per_group, p=p_A)
+    outcomes_A = np.array([
+        bucket_vals[b] + covariate_effect * c + rng.normal(0, 1)
+        for b, c in zip(buckets_A, covariates_A)
+    ])
+
+    buckets_B = rng.choice([0, 1], size=n_per_group, p=[0.5, 0.5])
+    covariates_B = rng.choice([0, 1], size=n_per_group, p=p_B)
     outcomes_B = np.array([
-        bucket_vals[b] * residual_scale + np.random.normal(0, 10)
-        for b in buckets_B
+        bucket_vals[b] + covariate_effect * c + residual_gap + rng.normal(0, 1)
+        for b, c in zip(buckets_B, covariates_B)
     ])
     
     # Create DataFrames
@@ -202,10 +225,7 @@ def generate_synthetic_dataset(
         'outcome': outcomes_B,
     })
     
-    # Approximate ground truth (effect_size as specified)
-    ground_truth = effect_size
-    
-    return df_A, df_B, ground_truth
+    return df_A, df_B, effect_size
 
 
 def run_ablation(

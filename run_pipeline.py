@@ -9,6 +9,7 @@ sys.path.insert(0, 'src')
 import warnings
 warnings.filterwarnings('ignore')
 
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -42,12 +43,19 @@ CONFIG = {
 # ============================================================
 from src.data_loader import load_and_preprocess_data, split_groups, get_bucket_index
 from src.sdecho import run_sdecho
-from src.reweighting import select_predicate, compute_gap_decomposition, sequential_gap_decomposition
+from src.reweighting import (
+    select_predicate,
+    compute_gap_decomposition,
+    sequential_gap_decomposition,
+    audit_predicate_reweighting,
+)
 from src.evaluation import removal_baseline, bootstrap_explained_fraction_ci
 from src.visualization import (
     plot_sequence_comparison,
     plot_gap_decomposition_bar,
     render_diagnostics_table,
+    render_predicate_audit_summary,
+    render_bucket_audit_table,
     render_sequential_decomposition_table,
     plot_sequential_sequence_comparison
 )
@@ -169,6 +177,8 @@ def main():
         index=index,
         min_cell_support=CONFIG["min_cell_support"],
     )
+
+    audit = audit_predicate_reweighting(result, index)
     
     # Show which buckets are being reweighted
     reweighted_labels = [index[i] for i in result.reweighted_buckets]
@@ -190,6 +200,33 @@ def main():
         diff_cf = result.s_source_cf[i] - seq_B[i]
         print(f"    {bucket:>6}: orig A={seq_A_orig[i]:>10,.0f}  cf A={result.s_source_cf[i]:>10,.0f}  B={seq_B[i]:>10,.0f}  "
               f"orig diff={diff_orig:>+10,.0f}  cf diff={diff_cf:>+10,.0f}{reweighted}")
+
+    print("\n" + "=" * 70)
+    print("PREDICATE AUDIT")
+    print("=" * 70)
+    print(f"\n  Category: {audit.category}")
+    print(f"  Interpretation: {audit.explanation}")
+
+    audit_summary = render_predicate_audit_summary(audit)
+    print("\n  Audit summary:")
+    for _, row in audit_summary.iterrows():
+        print(f"    {row['Metric']:<28} {row['Value']}")
+
+    bucket_audit = render_bucket_audit_table(audit)
+    print("\n  Per-bucket audit:")
+    print("    " + "-" * 98)
+    print(f"    {'Bucket':<8} {'Original Gap':>14} {'CF Gap':>14} {'Abs Change':>14} {'Bucket EF':>12} {'Status':>12}")
+    print("    " + "-" * 98)
+    for _, row in bucket_audit.iterrows():
+        print(
+            f"    {str(row['Bucket']):<8} "
+            f"{row['Original Gap']:>14} "
+            f"{row['Counterfactual Gap']:>14} "
+            f"{row['Abs Gap Change']:>14} "
+            f"{row['Bucket EF']:>12} "
+            f"{row['Status']:>12}"
+        )
+    print("    " + "-" * 98)
     
     # ============================================================
     # Compare with removal baseline
@@ -219,17 +256,20 @@ def main():
     print(f"BOOTSTRAP CONFIDENCE INTERVAL ({CONFIG['n_bootstrap']} resamples)")
     print("=" * 70)
     
-    ci_lower, ci_upper = bootstrap_explained_fraction_ci(
+    ci_lower, ci_upper, n_boot_valid, n_boot_failed = bootstrap_explained_fraction_ci(
         df_A, df_B, predicate,
         group_col=CONFIG["group_col"],
         measure_col=CONFIG["measure_col"],
         index=index,
         n_bootstrap=CONFIG["n_bootstrap"],
         ci=CONFIG["bootstrap_ci"],
+        min_cell_support=CONFIG["min_cell_support"],
+        return_diagnostics=True,
     )
     
     print(f"\n  Explained fraction: {result.explained_fraction:.2%}")
     print(f"  {CONFIG['bootstrap_ci']:.0%} Confidence Interval: [{ci_lower:.2%}, {ci_upper:.2%}]")
+    print(f"  Bootstrap valid/failed resamples: {n_boot_valid}/{n_boot_failed}")
     
     # ============================================================
     # Diagnostics
@@ -281,6 +321,10 @@ def main():
     print("\n" + "=" * 70)
     print("Generating visualizations...")
     print("=" * 70)
+
+    results_dir = Path("results")
+    results_dir.mkdir(exist_ok=True)
+    comparison_label = f"{CONFIG['subgroup_val1']}_vs_{CONFIG['subgroup_val2']}"
     
     # Plot 1: Sequence comparison (use sequential decomposition results)
     fig1 = plot_sequence_comparison(
@@ -300,6 +344,28 @@ def main():
     plt.close(fig2)
     print("  ✓ Saved: gap_decomposition.png")
     
+    audit_summary_path = results_dir / f"audit_summary_{comparison_label}.csv"
+    bucket_audit_path = results_dir / f"bucket_audit_{comparison_label}.csv"
+    audit_interpretation_path = results_dir / f"audit_interpretation_{comparison_label}.txt"
+
+    audit_summary.to_csv(audit_summary_path, index=False)
+    bucket_audit.to_csv(bucket_audit_path, index=False)
+    with open(audit_interpretation_path, "w", encoding="utf-8") as f:
+        f.write(f"Predicate Audit - {comparison_label}\n")
+        f.write("=" * 80 + "\n\n")
+        f.write(f"Predicate: {predicate}\n")
+        f.write(f"Category: {audit.category}\n")
+        f.write(f"Explained fraction: {audit.explained_fraction:.2%}\n")
+        f.write(f"Original distance: {audit.d_orig:.2f}\n")
+        f.write(f"Counterfactual distance: {audit.d_cf:.2f}\n\n")
+        f.write("Interpretation:\n")
+        f.write(audit.explanation + "\n\n")
+        f.write("Note: This is a statistical reweighting diagnostic, not a causal claim.\n")
+
+    print(f"  Saved: {audit_summary_path}")
+    print(f"  Saved: {bucket_audit_path}")
+    print(f"  Saved: {audit_interpretation_path}")
+
     # ============================================================
     # SUMMARY
     # ============================================================

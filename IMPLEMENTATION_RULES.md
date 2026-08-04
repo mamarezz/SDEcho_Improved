@@ -19,6 +19,23 @@ Instead,
 
 improve the existing implementation.
 
+Current Research Framing
+
+The project is now framed as explanation auditing.
+
+Do not assume the goal is always to reduce the sequence gap.
+
+The implementation should determine whether a SDEcho-discovered predicate is:
+
+- compositional,
+- weak/non-compositional,
+- gap-amplifying,
+- bucket-specific,
+- or a proxy/residual indicator.
+
+Small or negative explained fractions are valid findings and should be
+reported, not hidden.
+
 ---
 
 When suggesting code,
@@ -48,6 +65,9 @@ How will it be evaluated?
 How can it fail?
 
 How would Reviewer #2 criticize it?
+
+Does it distinguish removal-based influence from reweighting-based
+composition?
 
 ---
 
@@ -114,6 +134,17 @@ sanity checks,
 synthetic examples,
 
 and expected outputs.
+
+Every main reweighting result should include bucket-level diagnostics:
+
+- original bucket gap
+- counterfactual bucket gap
+- change in absolute bucket gap
+- whether the bucket improved or worsened
+
+This is required because a predicate can reduce the global distance while
+worsening individual buckets, or increase the global distance while revealing
+important heterogeneity.
 
 ---
 

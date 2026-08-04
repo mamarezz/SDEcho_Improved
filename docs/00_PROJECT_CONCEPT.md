@@ -6,6 +6,39 @@
 
 ---
 
+## 0. Updated Framing
+
+The project should be framed as **explanation auditing**, not simply as a
+method for reducing the gap between aggregate sequences.
+
+SDEcho identifies predicates that are influential under a removal-based
+counterfactual: it asks what happens when matching tuples are deleted. This
+thesis asks a different question: what happens when the distribution of the
+SDEcho-discovered predicate is statistically aligned between the two groups?
+
+Under this framing, a small or negative explained fraction is not a failed
+result. It is an empirical finding. It means the SDEcho predicate may be
+influential under removal but weak, non-compositional, bucket-specific, or even
+gap-amplifying under reweighting.
+
+The second-stage reweighting analysis should classify SDEcho predicates into
+interpretation categories:
+
+- **Compositional explainer**: reweighting reduces the sequence gap.
+- **Weak/non-compositional explainer**: SDEcho ranks the predicate highly, but
+  reweighting explains little of the gap.
+- **Gap-amplifying predicate**: reweighting increases the sequence distance.
+- **Bucket-specific explainer**: reweighting helps in some sequence buckets and
+  hurts in others.
+- **Proxy/residual indicator**: the predicate points toward deeper within-cell
+  differences or unobserved variables, but does not by itself identify a cause.
+
+The project does **not** detect causal mechanisms directly. It detects
+statistical patterns that can generate disciplined hypotheses about possible
+underlying mechanisms.
+
+---
+
 ## 1. One-Paragraph Summary
 
 SDEcho explains *why* two aggregate sequences differ by discovering a predicate

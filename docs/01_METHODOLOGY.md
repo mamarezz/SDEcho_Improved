@@ -27,6 +27,42 @@ each subsection cross-referenced to its implementation.
 
 ---
 
+## 1.1 Explanation-Auditing Framing
+
+This thesis does not treat counterfactual reweighting only as a way to reduce
+the sequence gap. Instead, reweighting is used to audit the meaning of
+SDEcho-discovered predicates.
+
+SDEcho's removal score identifies predicates whose matching tuples are
+influential when deleted. Reweighting tests a different statistical question:
+if the source group had the target group's observed distribution over the
+predicate attributes, would the aggregate sequence move closer to the target,
+stay roughly the same, or move farther away?
+
+Let
+
+$$
+EF(P) = \frac{d_{\text{orig}} - d_{\text{cf}}(P)}{d_{\text{orig}}}.
+$$
+
+Interpretation:
+
+- $EF(P) > 0$: the predicate has compositional explanatory power.
+- $EF(P) \approx 0$: the predicate is influential under SDEcho removal but weak
+  as a compositional explanation.
+- $EF(P) < 0$: the predicate is gap-amplifying under reweighting.
+
+The sign and magnitude of $EF(P)$ should be interpreted together with
+per-bucket diagnostics. A predicate may reduce the global Euclidean distance
+while worsening some buckets, or increase the global distance while revealing
+important heterogeneity.
+
+These patterns do not identify causal mechanisms. They generate hypotheses
+about possible within-cell residual differences, omitted variables, or
+interactions such as age group by country by experience bucket.
+
+---
+
 ## 2. Aggregate Sequence (Stage 3 — unchanged from SDEcho)
 
 $$

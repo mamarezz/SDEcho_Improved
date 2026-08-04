@@ -68,6 +68,35 @@ class GapDecompositionResult:
     bucket_details: Optional[List[dict]] = None
 
 
+@dataclass(frozen=True)
+class PredicateAuditResult:
+    """
+    Interpretation layer for one reweighted SDEcho predicate.
+
+    Attributes:
+        predicate: Predicate being audited
+        category: Global interpretation category
+        explanation: Thesis-ready, non-causal interpretation sentence
+        explained_fraction: Global explained fraction from decomposition
+        d_orig: Original sequence distance
+        d_cf: Counterfactual sequence distance
+        n_buckets_improved: Number of buckets whose absolute gap shrank
+        n_buckets_worsened: Number of buckets whose absolute gap grew
+        n_buckets_unchanged: Number of buckets with negligible change
+        bucket_diagnostics: Per-bucket gap diagnostics
+    """
+    predicate: Predicate
+    category: str
+    explanation: str
+    explained_fraction: float
+    d_orig: float
+    d_cf: float
+    n_buckets_improved: int
+    n_buckets_worsened: int
+    n_buckets_unchanged: int
+    bucket_diagnostics: List[dict]
+
+
 def select_predicate(results: list[SDEchoResult], rank: int = 0) -> Predicate:
     """
     Select the rank-th predicate from SDEcho's ranked output.
@@ -428,7 +457,7 @@ def compute_gap_decomposition(
     reweight_threshold_factor: float = 0.18,
     reweight_min_difference: float = 10000,
     reweight_min_percentage: float = 5.0,
-    reweight_buckets: Optional[Union[str, List[int]]] = "dynamic",
+    reweight_buckets: Optional[Union[str, List[int]]] = "all",
 ) -> GapDecompositionResult:
     """
     Full Stage 7-10 orchestration: reweighting and gap decomposition.
@@ -451,9 +480,9 @@ def compute_gap_decomposition(
         reweight_min_difference: Minimum absolute difference to consider significant.
         reweight_min_percentage: Minimum percentage difference to consider significant.
         reweight_buckets: Override for bucket selection. Can be:
-            - "dynamic" (default): Use automatic detection
+            - "all" (default): Reweight the complete aggregate sequence
+            - "dynamic": Use automatic detection for exploratory diagnostics
             - A list of bucket indices (e.g., [1, 2] for [3-5] and [6-10])
-            - "all": Reweight all buckets
     
     Returns:
         GapDecompositionResult with original/counterfactual sequences,
@@ -470,6 +499,12 @@ def compute_gap_decomposition(
     weights, diagnostics = compute_cell_weights(
         df_source, df_target, attrs, min_cell_support
     )
+
+    if diagnostics.n_cells_valid == 0:
+        raise ValueError(
+            "No valid common-support cells remain after applying "
+            f"min_cell_support={min_cell_support} for attrs={attrs}."
+        )
     
     # Stage 3: Build original sequences
     s_source_orig = build_sequence(df_source, group_col, measure_col, agg_func="mean", index=index)
@@ -496,7 +531,21 @@ def compute_gap_decomposition(
     elif reweight_buckets == "all":
         buckets_to_reweight = list(range(len(index)))
         threshold_used = 0.0
-        bucket_details = []
+        bucket_details = [
+            {
+                "index": i,
+                "label": bucket,
+                "abs_diff": float(abs(s_source_orig[i] - s_target[i])),
+                "pct_diff": float(
+                    abs(s_source_orig[i] - s_target[i])
+                    / max((abs(s_source_orig[i]) + abs(s_target[i])) / 2, 1.0)
+                    * 100
+                ),
+                "value_source": float(s_source_orig[i]),
+                "value_target": float(s_target[i]),
+            }
+            for i, bucket in enumerate(index)
+        ]
     else:
         raise ValueError(f"Unknown reweight_buckets value: {reweight_buckets}")
     
@@ -534,6 +583,159 @@ def compute_gap_decomposition(
         bucket_threshold=threshold_used,
         bucket_selection_method=reweight_method,
         bucket_details=bucket_details,
+    )
+
+
+def audit_predicate_reweighting(
+    result: GapDecompositionResult,
+    index: list[str],
+    meaningful_ef_threshold: float = 0.05,
+    bucket_change_tolerance: float = 1e-9,
+) -> PredicateAuditResult:
+    """
+    Classify and explain one SDEcho predicate after reweighting.
+
+    This is the project's explanation-auditing layer. It does not recompute
+    reweighting. Instead, it interprets an existing GapDecompositionResult by
+    comparing original and counterfactual gaps globally and per bucket.
+
+    Args:
+        result: Output of compute_gap_decomposition()
+        index: Ordered bucket labels corresponding to the sequence entries
+        meaningful_ef_threshold: Minimum absolute explained fraction treated
+            as globally meaningful. Default 0.05 means +/-5%.
+        bucket_change_tolerance: Absolute tolerance for bucket-level gap
+            changes treated as unchanged.
+
+    Returns:
+        PredicateAuditResult with a global category and per-bucket diagnostics.
+
+    Notes:
+        - Negative explained fraction is reported as gap amplification.
+        - The explanation text intentionally avoids causal language.
+    """
+    if len(index) != len(result.s_source_orig):
+        raise ValueError(
+            "index length must match the aggregate sequence length "
+            f"({len(index)} != {len(result.s_source_orig)})."
+        )
+
+    bucket_diagnostics = []
+    n_improved = 0
+    n_worsened = 0
+    n_unchanged = 0
+
+    for i, label in enumerate(index):
+        original_gap = float(result.s_source_orig[i] - result.s_target[i])
+        counterfactual_gap = float(result.s_source_cf[i] - result.s_target[i])
+        original_abs_gap = abs(original_gap)
+        counterfactual_abs_gap = abs(counterfactual_gap)
+        absolute_gap_change = original_abs_gap - counterfactual_abs_gap
+
+        if absolute_gap_change > bucket_change_tolerance:
+            status = "improved"
+            n_improved += 1
+        elif absolute_gap_change < -bucket_change_tolerance:
+            status = "worsened"
+            n_worsened += 1
+        else:
+            status = "unchanged"
+            n_unchanged += 1
+
+        bucket_explained_fraction = (
+            absolute_gap_change / original_abs_gap
+            if original_abs_gap > 0
+            else 0.0
+        )
+
+        bucket_diagnostics.append({
+            "bucket": label,
+            "source_original": float(result.s_source_orig[i]),
+            "source_counterfactual": float(result.s_source_cf[i]),
+            "target": float(result.s_target[i]),
+            "original_gap": original_gap,
+            "counterfactual_gap": counterfactual_gap,
+            "original_abs_gap": original_abs_gap,
+            "counterfactual_abs_gap": counterfactual_abs_gap,
+            "absolute_gap_change": float(absolute_gap_change),
+            "bucket_explained_fraction": float(bucket_explained_fraction),
+            "status": status,
+        })
+
+    ef = result.explained_fraction
+    has_mixed_buckets = n_improved > 0 and n_worsened > 0
+
+    if ef < -meaningful_ef_threshold:
+        category = "gap-amplifying"
+    elif abs(ef) < meaningful_ef_threshold:
+        category = "bucket-specific" if has_mixed_buckets else "weak/non-compositional"
+    elif has_mixed_buckets:
+        category = "bucket-specific"
+    else:
+        category = "compositional"
+
+    explanation = _build_predicate_audit_explanation(
+        predicate=result.predicate,
+        category=category,
+        explained_fraction=ef,
+        n_improved=n_improved,
+        n_worsened=n_worsened,
+        n_unchanged=n_unchanged,
+    )
+
+    return PredicateAuditResult(
+        predicate=result.predicate,
+        category=category,
+        explanation=explanation,
+        explained_fraction=ef,
+        d_orig=result.d_orig,
+        d_cf=result.d_cf,
+        n_buckets_improved=n_improved,
+        n_buckets_worsened=n_worsened,
+        n_buckets_unchanged=n_unchanged,
+        bucket_diagnostics=bucket_diagnostics,
+    )
+
+
+def _build_predicate_audit_explanation(
+    predicate: Predicate,
+    category: str,
+    explained_fraction: float,
+    n_improved: int,
+    n_worsened: int,
+    n_unchanged: int,
+) -> str:
+    """Build a short non-causal interpretation for thesis reporting."""
+    pred_text = str(predicate)
+    ef_pct = explained_fraction * 100
+    bucket_summary = (
+        f"{n_improved} bucket(s) improved, {n_worsened} worsened, "
+        f"and {n_unchanged} were unchanged"
+    )
+
+    if category == "compositional":
+        return (
+            f"Aligning the distribution of {pred_text} is associated with a "
+            f"{ef_pct:.1f}% reduction in sequence distance; {bucket_summary}."
+        )
+    if category == "gap-amplifying":
+        return (
+            f"Aligning the distribution of {pred_text} increases the sequence "
+            f"distance by {abs(ef_pct):.1f}%; {bucket_summary}. This suggests "
+            "residual or bucket-level heterogeneity rather than a simple "
+            "compositional explanation."
+        )
+    if category == "bucket-specific":
+        return (
+            f"Aligning the distribution of {pred_text} has mixed bucket-level "
+            f"behavior with global explained fraction {ef_pct:.1f}%; "
+            f"{bucket_summary}."
+        )
+    return (
+        f"Aligning the distribution of {pred_text} changes the sequence "
+        f"distance only weakly ({ef_pct:.1f}% explained); {bucket_summary}. "
+        "The predicate is influential under SDEcho removal but weak as a "
+        "compositional explanation."
     )
 
 
@@ -577,13 +779,16 @@ def sequential_gap_decomposition(
     reweight_threshold_factor: float = 0.18,
     reweight_min_difference: float = 10000,
     reweight_min_percentage: float = 5.0,
-    reweight_buckets: Optional[Union[str, List[int]]] = "dynamic",
+    reweight_buckets: Optional[Union[str, List[int]]] = "all",
 ) -> SequentialDecompositionResult:
     """
     Sequential gap decomposition across multiple predicates.
 
     Computes how much of the gap is cumulatively explained by applying
-    predicates in sequence, using multiplicative weight combination.
+    predicates in sequence. At each step, the source group is reweighted to
+    match the target group's joint distribution over all predicate attributes
+    introduced up to that step. This avoids double-counting correlated
+    predicates through repeated marginal reweighting.
 
     Args:
         df_source: DataFrame for source group (to be reweighted)
@@ -598,9 +803,9 @@ def sequential_gap_decomposition(
         reweight_min_difference: Minimum absolute difference to consider significant
         reweight_min_percentage: Minimum percentage difference to consider significant
         reweight_buckets: Override for bucket selection:
-            - "dynamic" (default): Use automatic detection
+            - "all" (default): Reweight the complete aggregate sequence
+            - "dynamic": Use automatic detection for exploratory diagnostics
             - A list of bucket indices (e.g., [1, 2] for [3-5] and [6-10])
-            - "all": Reweight all buckets
 
     Returns:
         SequentialDecompositionResult with step-by-step decomposition
@@ -628,6 +833,7 @@ def sequential_gap_decomposition(
         raise ValueError(f"Unknown reweight_buckets value: {reweight_buckets}")
 
     cumulative_weights = pd.Series(1.0, index=df_source.index)
+    cumulative_attrs: List[str] = []
     steps = []
 
     # Step 0: Original gap
@@ -645,14 +851,22 @@ def sequential_gap_decomposition(
 
     # Apply each predicate sequentially
     for i, predicate in enumerate(predicates, 1):
-        weights, diagnostics = compute_cell_weights(
-            df_source, df_target, predicate.attrs, min_cell_support
+        for attr in predicate.attrs:
+            if attr not in cumulative_attrs:
+                cumulative_attrs.append(attr)
+
+        cumulative_weights, diagnostics = compute_cell_weights(
+            df_source, df_target, cumulative_attrs, min_cell_support
         )
 
-        new_weights = cumulative_weights * weights
+        if diagnostics.n_cells_valid == 0:
+            raise ValueError(
+                "No valid common-support cells remain after applying "
+                f"min_cell_support={min_cell_support} for attrs={cumulative_attrs}."
+            )
 
         s_source_cf = weighted_aggregate_sequence(
-            df_source, weights, group_col, measure_col, index
+            df_source, cumulative_weights, group_col, measure_col, index
         ).copy()
 
         # Only modify buckets in the reweight set
@@ -665,12 +879,10 @@ def sequential_gap_decomposition(
         cumulative_explained = 1.0 - (d_cf / d_orig) if d_orig > 0 else 0.0
         remaining_gap = d_cf / d_orig if d_orig > 0 else 0.0
 
-        cumulative_weights = new_weights
-
         steps.append({
             "step": i,
             "predicate": predicate,
-            "intervention": f"Change {', '.join(predicate.attrs)}",
+            "intervention": f"Align {', '.join(cumulative_attrs)}",
             "explained_fraction": explained_fraction,
             "cumulative_explained": cumulative_explained,
             "remaining_gap": remaining_gap,

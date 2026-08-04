@@ -7,7 +7,12 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for scripted use
 
-from src.reweighting import GapDecompositionResult, ReweightingDiagnostics, SequentialDecompositionResult
+from src.reweighting import (
+    GapDecompositionResult,
+    PredicateAuditResult,
+    ReweightingDiagnostics,
+    SequentialDecompositionResult,
+)
 
 
 def plot_sequence_comparison(
@@ -250,6 +255,69 @@ def render_diagnostics_table(
     
     df_table = pd.DataFrame(data)
     return df_table
+
+
+def render_predicate_audit_summary(audit: PredicateAuditResult) -> pd.DataFrame:
+    """
+    Create a compact thesis-ready summary of a predicate audit.
+
+    Args:
+        audit: PredicateAuditResult from audit_predicate_reweighting()
+
+    Returns:
+        DataFrame with high-level interpretation fields.
+    """
+    data = {
+        "Metric": [
+            "Predicate",
+            "Audit Category",
+            "Explained Fraction",
+            "Original Distance",
+            "Counterfactual Distance",
+            "Buckets Improved",
+            "Buckets Worsened",
+            "Buckets Unchanged",
+            "Interpretation",
+        ],
+        "Value": [
+            str(audit.predicate),
+            audit.category,
+            f"{audit.explained_fraction:.2%}",
+            f"{audit.d_orig:.2f}",
+            f"{audit.d_cf:.2f}",
+            audit.n_buckets_improved,
+            audit.n_buckets_worsened,
+            audit.n_buckets_unchanged,
+            audit.explanation,
+        ],
+    }
+    return pd.DataFrame(data)
+
+
+def render_bucket_audit_table(audit: PredicateAuditResult) -> pd.DataFrame:
+    """
+    Create a per-bucket audit table for interpreting reweighting behavior.
+
+    Args:
+        audit: PredicateAuditResult from audit_predicate_reweighting()
+
+    Returns:
+        DataFrame with one row per aggregate-sequence bucket.
+    """
+    rows = []
+    for row in audit.bucket_diagnostics:
+        rows.append({
+            "Bucket": row["bucket"],
+            "Source Original": f"{row['source_original']:.2f}",
+            "Source Counterfactual": f"{row['source_counterfactual']:.2f}",
+            "Target": f"{row['target']:.2f}",
+            "Original Gap": f"{row['original_gap']:.2f}",
+            "Counterfactual Gap": f"{row['counterfactual_gap']:.2f}",
+            "Abs Gap Change": f"{row['absolute_gap_change']:.2f}",
+            "Bucket EF": f"{row['bucket_explained_fraction']:.2%}",
+            "Status": row["status"],
+        })
+    return pd.DataFrame(rows)
 
 
 def render_sequential_decomposition_table(
