@@ -1,6 +1,6 @@
 # src/predicates.py
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Any
 import itertools
 import pandas as pd
@@ -99,10 +99,8 @@ def predicate_mask(df: pd.DataFrame, predicate: Predicate) -> pd.Series:
         >>> matching_rows = df[mask]
     """
     mask = pd.Series(True, index=df.index)
-    
+
     for attr, val in predicate.conditions.items():
         mask &= (df[attr] == val)
-    
-    return mask
 
-        
+    return mask

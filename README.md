@@ -1,61 +1,117 @@
-# SDEcho Predicate Reweighting Audit
+# Sequential Counterfactual SDEcho
 
-This master's thesis project extends SDEcho with a statistical reweighting
-stage for aggregate sequence explanation.
+This project extends SDEcho into an ordered residual-explanation procedure for
+aggregate sequences.
 
-SDEcho discovers predicates that are influential under removal. This project
-asks a different question: if the distribution of a SDEcho-discovered predicate
-were aligned between two groups, would the aggregate sequence gap shrink,
-remain, or grow?
+At every iteration it:
 
-The goal is not only gap reduction. The goal is to audit what kind of
-explanation a SDEcho predicate provides.
+1. runs weighted SDEcho removal on the current pseudo-populations;
+2. considers the configured top weighted-SDEcho pool and selects its
+   highest-ranked predicate that passes support, weight, and positive-gain
+   gates;
+3. balances the exact binary predicate event in the source group to the fixed
+   target group within a bucket set frozen from the original sequences;
+4. recalibrates all previously selected predicate constraints together;
+5. reruns SDEcho on the remaining weighted difference.
 
-## Main Interpretation Categories
+The output is an ordered path such as:
 
-- **Compositional explainer**: reweighting reduces the aggregate sequence gap.
-- **Weak/non-compositional explainer**: SDEcho ranks the predicate highly, but
-  reweighting explains little of the gap.
-- **Gap-amplifying predicate**: reweighting increases the sequence distance.
-- **Bucket-specific explainer**: reweighting helps in some buckets and hurts in
-  others.
-- **Proxy/residual indicator**: the predicate suggests hidden structure or
-  within-cell differences, but does not identify a cause.
+```text
+Initial gap
+  -> Country=USA
+  -> Education=Doctoral, conditional on Country balance
+  -> RemoteWork=Remote, conditional on both earlier balances
+  -> residual gap
+```
 
-## Important Assumption
+This is a descriptive counterfactual analysis, not a causal estimator.
 
-This project performs statistical counterfactual reweighting. It does not make
-causal claims.
+## Project structure
 
-Acceptable interpretation:
+```text
+foundation.txt                 Complete theory, formulas, and assumptions
+run_pipeline.py                Real Stack Overflow 2022 pipeline
+src/
+  predicates.py                Predicate representation and enumeration
+  sequence_builder.py          Weighted sequence construction and ESS
+  sdecho.py                    Weighted removal search
+  balancing.py                 Cumulative predicate-event calibration
+  iterative_sdecho.py          Iterative orchestration and result types
+  data_loader.py               Survey loading and group preparation
+  visualization.py             Path tables and figures
+synthetic_data/
+  generator.py                 Deterministic ordered ground truth
+  benchmark.py                 End-to-end recovery runner
+  visualization.py             Oracle-versus-recovery figure
+  ground_truth.json            Human-readable expected order and distances
+  results/                     Current tables and PNG/SVG figures
+  archive/                     Clearly labeled retired benchmark outputs
+tests/                         Unit and end-to-end validation
+docs/                          Compact implementation and evaluation guides
+```
 
-> Aligning `Country` changes the counterfactual salary sequence and suggests
-> residual heterogeneity across experience buckets.
+## Run the deterministic validation
 
-Avoid:
+```powershell
+python -m synthetic_data.benchmark
+```
 
-> Country causes the salary gap.
+This command also writes the consolidated current results to
+`synthetic_data/results/`, including distance-path, sequence-path, and
+ground-truth recovery figures.
 
-## Pipeline
+Expected predicate order:
 
-1. Load Stack Overflow Developer Survey data.
-2. Define two comparison groups.
-3. Build aggregate sequences.
-4. Compute original sequence distance.
-5. Run SDEcho to rank predicates.
-6. Reweight the source group to match the target distribution over predicate
-   attributes.
-7. Build the counterfactual sequence.
-8. Report distance change, explained fraction, residual gap, gap amplification,
-   bucket-level diagnostics, and common-support diagnostics.
+```text
+Country=USA -> Education=Doctoral -> RemoteWork=Remote
+```
 
-## Key Files
+Expected distance path:
 
-- `PROJECT_CONTEXT.md`: top-level project framing.
-- `IMPLEMENTATION_REFRAMING.md`: current implementation assumptions and
-  reporting rules.
-- `IMPLEMENTATION_RULES.md`: coding and thesis-quality rules.
-- `run_pipeline.py`: end-to-end pipeline.
-- `src/reweighting.py`: core reweighting and decomposition logic.
-- `src/evaluation.py`: baselines, bootstrap, and synthetic validation.
-- `docs/00_PROJECT_CONCEPT.md`: thesis concept and research framing.
+```text
+50,000 -> 26,000 -> 12,000 -> 4,000
+```
+
+## Run the real-data pipeline
+
+Place the Stack Overflow 2022 survey at
+`data/stackoverflow2022.csv`, then run:
+
+```powershell
+python run_pipeline.py
+```
+
+Artifacts are written to `iterative_results/`:
+
+- `iterations.csv`
+- `candidate_rejections.csv`
+- `sequence_path.csv`
+- `final_balance.csv`
+- `final_support.csv`
+- `summary.json`
+- `distance_path.png`
+- `sequence_path.png`
+
+## Run tests
+
+```powershell
+python -m pytest -q
+```
+
+The tests cover weighted sequence construction, hand-checkable SDEcho scores,
+raw/active/effective support guards, correlated cumulative calibration, exact
+ordered predicate and distance recovery, preservation of previous balance
+constraints, and deterministic repeatability.
+
+## Interpretation
+
+Each step reports two different diagnostics:
+
+- search-bucket distance after deleting the selected predicate from both
+  weighted groups;
+- full-sequence distance after balancing that predicate's prevalence in the
+  source group inside the same frozen buckets.
+
+They answer different questions and need not be equal. See `foundation.txt`
+for the mathematical distinction, real-data evidence, support assumptions, and
+claim boundaries.

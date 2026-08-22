@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local survey data and papers are not part of the executable source tree.
+data/
+papers/
+
+# Generated evaluation artifacts.
+iterative_results/
+additional_evaluation/
+*.png
+!synthetic_data/results/*.png
+!synthetic_data/archive/**/*.png
+!synthetic_data/archive/legacy_one_shot/data/
+!synthetic_data/archive/legacy_one_shot/data/**

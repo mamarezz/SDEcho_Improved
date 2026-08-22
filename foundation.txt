@@ -1,0 +1,580 @@
+THEORETICAL FOUNDATION: SEQUENTIAL COUNTERFACTUAL SDECHO
+========================================================
+
+1. PURPOSE
+----------
+
+This project explains why two aggregate sequences differ.  A sequence is a
+vector of group-level aggregates, such as mean annual salary for the experience
+buckets 0-2, 3-5, 6-10, and 10-20 years.
+
+The original SDEcho method discovers value-defined predicates whose matching
+tuples are influential under removal.  The extension developed here asks a
+second, explicitly distributional question:
+
+    After making the two groups have the same prevalence of the first
+    discovered predicate within the frozen intervention buckets, what
+    predicate explains the remaining weighted sequence difference?
+
+The method repeats discovery and balancing to produce an ordered explanation
+path.  It is descriptive and counterfactual.  It does not identify causal
+effects.
+
+
+2. ORIGINAL SEQUENCES AND DISTANCE
+----------------------------------
+
+Let A be the source group and B the fixed reference group.  Let b index the
+ordered sequence buckets.  For outcome Y, the observed bucket means are
+
+    mu_A(b) = E[Y | A, b]
+    mu_B(b) = E[Y | B, b].
+
+The bucket-gap vector is
+
+    delta_b = mu_A(b) - mu_B(b).
+
+The project uses Euclidean sequence distance over the full declared index F:
+
+    D_0^F = ||delta||_2
+        = sqrt(sum_b (mu_A(b) - mu_B(b))^2).
+
+The intervention policy freezes a subset S of material buckets from the
+original gaps.  Weighted SDEcho removal uses distance D_t^S over S, while the
+accepted balancing path uses D_t^F over every declared bucket.  Rows outside S
+retain their base weights, so their coordinates remain visible but unchanged.
+
+Euclidean distance is nonlinear: a global percentage is not an average of
+bucket percentages, and large bucket gaps contribute quadratically.
+
+
+3. WHAT SDECHO REMOVAL MEASURES
+-------------------------------
+
+A predicate P is a conjunction such as
+
+    Country = USA
+
+or
+
+    Country = USA AND Education = Doctoral.
+
+For a candidate P, SDEcho removes matching tuples from both groups, rebuilds
+both sequences, and obtains D_{-P}.  Its removal reduction is
+
+    R_remove(P) = 1 - D_{-P} / D_0.
+
+The SDEcho ranking also penalizes predicates that cover large fractions of the
+data.  With ordinary unweighted tuples,
+
+    gamma(P) = (D_{-P} / D_0)
+               * [1 + n_A(P)/N_A + n_B(P)/N_B].
+
+Smaller gamma is stronger.  Removal is an influence diagnostic.  It can react
+to prevalence differences, within-predicate outcome differences, outliers,
+and the renormalization of the remaining means.  A large removal reduction is
+therefore not automatically a compositional share of the original gap.
+
+
+4. WHY REMOVAL AND REWEIGHTING DIFFER
+-------------------------------------
+
+Let I = 1{P} be the exact binary predicate event.  Within bucket b define
+
+    q_gb       = Pr(I=1 | group g, b)
+    m_gb1      = E[Y | group g, b, I=1]
+    m_gb0      = E[Y | group g, b, I=0].
+
+After deleting P from both groups, the residual bucket gap is
+
+    r_b = m_Ab0 - m_Bb0.
+
+After reweighting A so that its predicate prevalence equals B's prevalence,
+while retaining A's conditional outcomes, the residual is
+
+    c_b = (1-q_Bb)(m_Ab0-m_Bb0)
+          + q_Bb(m_Ab1-m_Bb1).
+
+Therefore
+
+    c_b - r_b
+      = q_Bb[(m_Ab1-m_Bb1) - (m_Ab0-m_Bb0)].
+
+Removal and prevalence balancing agree only under special conditional-outcome
+conditions.  Neither effect is universally larger.
+
+If delta is the original gap vector and a transformation produces residual
+delta^T, its signed distance effect is
+
+    R_T = 1 - ||delta^T||_2 / ||delta||_2.
+
+Interpretation:
+
+    R_T > 0   the transformation moves the sequences closer;
+    R_T = 0   the sequence distance is unchanged;
+    R_T < 0   the transformation increases the sequence distance.
+
+A negative value is a valid gap-amplifying result, not a mathematical error.
+
+Writing a^T = delta - delta^T for the change in the gap vector, distance is
+reduced exactly when
+
+    2 * delta' a^T > ||a^T||_2^2.
+
+Thus it is not enough for some coordinates to move.  The movement must point
+sufficiently toward the target and must not overshoot by too much.
+
+This direct comparison assumes that both transformations use the same
+coordinate set.  Under the active material-bucket policy, SDEcho's exported
+removal percentage is computed over S, whereas balancing path reductions are
+computed over F.  Those percentages are different diagnostics and must not be
+compared as if they shared a denominator.  Use an all-bucket run or separately
+evaluate removal over F when a same-coordinate comparison is required.
+
+Global categorical weighting also has an important limitation.  If X is
+balanced globally with ratio p_B(X)/p_A(X), the weighted source law inside
+bucket b is proportional to
+
+    p_A(X | b) * p_B(X) / p_A(X),
+
+which is generally not p_B(X | b).  This is why the iterative implementation
+uses predicate-event-by-bucket constraints when it claims that a predicate has
+been standardized across the sequence.
+
+
+5. EVIDENCE FROM THE ORIGINAL REAL-DATA ANALYSIS
+-------------------------------------------------
+
+For ages 25-34 versus 35-44 in the Stack Overflow 2022 data, the original mean
+salary sequences were approximately
+
+    A = [135156, 131692, 173414, 205397]
+    B = [123917, 194521, 212527, 197010]
+
+with gap vector
+
+    delta = [+11238, -62828, -39113, +8387]
+
+and distance
+
+    D_0 = 75324.9.
+
+The first predicate was Country=United States of America.
+
+Deleting USA rows from both groups gave distance 30113.7, a 60.02 percent
+removal reduction.  The earlier full-Country reweighting intervention, applied
+only to selected coordinates, gave distance 35623.5 and a 52.71 percent signed
+effect.  Reweighting every coordinate under that global full-Country scheme
+gave only about 6.16 percent because two bucket gaps became worse.
+
+The large removal result was not pure Country composition.  In the 3-5 bucket,
+USA prevalence and conditional mean salary differed substantially:
+
+    USA share:       A 17.64 percent, B 26.68 percent
+    USA mean salary: A 378632,       B 490669
+    non-USA mean:    A 78809,        B 86733.
+
+Removing USA rows eliminates much of this conditional upper-tail difference
+from both groups.  Reweighting prevalence cannot do that because it retains
+the source group's conditional USA salaries.
+
+A direct diagnostic for the new method balanced the exact binary USA event
+within every experience bucket.  It changed the distance from 75324.9 to
+53883.5, a 28.47 percent reduction, with effective sample size about 96.2
+percent of the source sample.  USA deletion still reduced the remaining
+weighted distance by 44.11 percent.  Residual predicates were refinements such
+as USA combined with education.  This illustrates why a previously balanced
+predicate can remain influential under deletion: prevalence was standardized,
+but conditional outcome heterogeneity remained.
+
+
+The earlier implementation selected reweighted coordinates from the observed
+outcome gaps.  Its threshold was
+
+    max(0.18 * maximum absolute bucket gap, 10000)
+
+combined with a 5 percent relative-difference requirement.  In the main data,
+the threshold was about 11309.  The 0-2 gap of 11238 narrowly failed the strict
+greater-than check, so only 3-5 and 6-10 were changed.  Restoring other
+coordinates after weighting produced a hybrid sequence rather than the
+sequence of one coherent weighted population.  The new implementation selects
+the intervention buckets once from the original sequences and freezes that
+set for the entire path.  It applies row weights inside those buckets and
+leaves all other rows at their base weight, so every reported sequence comes
+from one coherent weighted population.  The main configuration freezes 3-5
+and 6-10; the synthetic correctness benchmark explicitly freezes all buckets.
+Weighted SDEcho scores the same frozen bucket set that the calibration step can
+change.  Its support, effective-support, and prevalence-penalty calculations
+are restricted to rows in those buckets.  The reported balancing-path distance
+still includes every declared bucket; unchanged coordinates therefore remain
+visible in the residual.
+
+
+6. LESSON FROM THE PREVIOUS SYNTHETIC BENCHMARK
+------------------------------------------------
+
+The earlier benchmark planted two conjunctive cells.  Each cell had source
+share 5/100 = 5 percent and target share 20/130 = 15.38 percent.  Removing one
+planted cell changed the other cell's relative shares to
+
+    5/95   = 5.26 percent
+    20/110 = 18.18 percent.
+
+Deletion therefore amplified the remaining imbalance.  A single planted-cell
+removal closed only about 30.24 percent of the gap even though the designed
+component was larger.
+
+The old reweighting operation was broader than deletion.  For a predicate such
+as Advanced AND Metro, it ignored the values and balanced every SkillTrack by
+Region cell.  That operation also moved background cells and leaked into the
+second planted mechanism.  Its individual signed effects were approximately
+46.63 percent and 41.87 percent.  They overlapped and could not be added.
+
+Deleting the union of both planted cells left the designed 20 percent residual
+and therefore gave exactly 80 percent reduction.  Full joint-attribute
+alignment also approached 80 percent because that synthetic population had
+complete support, identical conditional premiums, and stable cell proportions
+across buckets.  The near equality was a property of the constructed data, not
+a theorem connecting removal and reweighting.
+
+This lesson motivates exact binary predicate-event balancing in the new
+benchmark.  The intervention now corresponds directly to the value-defined
+predicate selected at each iteration.
+
+
+7. EXACT PREDICATE-EVENT BALANCING
+----------------------------------
+
+The intervention must preserve the meaning of the discovered predicate.  For
+P = Country=USA, define
+
+    Z_P = 1{Country=USA}.
+
+The method balances USA versus non-USA.  It does not replace this event with
+the complete distribution over every country.  Full-attribute alignment is a
+broader intervention and answers a different question.
+
+Because the output is bucketed, balance is imposed inside every frozen
+intervention bucket.  Let q_Ab be A's current weighted prevalence and q_Bb be
+B's fixed reference prevalence.  The single-constraint update in bucket b is
+
+    factor for P-matching rows     = q_Bb / q_Ab
+    factor for non-matching rows   = (1-q_Bb) / (1-q_Ab).
+
+Both factors are necessary.  The expected update preserves total bucket mass
+and makes the weighted source prevalence equal to the target prevalence.
+
+The direction is A to B:
+
+    B remains fixed;
+    A is standardized to B's predicate-event distribution;
+    A's conditional outcomes are retained.
+
+For one binary constraint, the resulting one-sided counterfactual mean is
+
+    mu_A^cf(b) = sum_z Pr_B(Z=z | b) E_A[Y | b, Z=z].
+
+With several marginal constraints, cyclic calibration can also change the
+within-event mixture.  The final mean is therefore the empirical weighted mean
+of the calibrated pseudo-population, not a claim that the complete joint
+distribution has been matched.
+
+This direction answers: what would A's sequence look like under B's selected
+predicate-event margins?  Reversing the direction can produce a different
+path and is a sensitivity analysis, not the same estimand.
+
+
+8. CUMULATIVE CALIBRATION
+-------------------------
+
+Suppose predicates P1 and P2 are selected sequentially.  A one-pass P2 update
+can destroy the earlier P1 balance when the predicates are correlated.
+
+At iteration t, weights are therefore recomputed from fixed base weights under
+all accumulated constraints:
+
+    Pr_A^w(P_j=1 | b) = Pr_B(P_j=1 | b)
+
+for every selected predicate j <= t and every frozen intervention bucket b.
+
+Cyclic calibration repeatedly applies the binary margin updates until the
+maximum absolute balance error is below a fixed tolerance.  This preserves
+earlier constraints.  It matches selected event margins, not necessarily their
+complete joint distribution.  Matching the complete 2^t joint distribution
+would become sparse rapidly.
+
+Calibration can fail when the requested target margins are outside the source
+support.  The implementation records the candidate and reason in the rejection
+audit, then considers the next candidate in the configured pool.  It never
+silently invents rows or clips weights; clipping would break exact balance.
+
+
+9. WEIGHTED SDECHO ON THE RESIDUAL POPULATION
+---------------------------------------------
+
+Let w_gi^(t) be the row weights after t accepted balance steps.  The current
+bucket mean is
+
+    mu_g^(t)(b)
+      = sum_{i in g,b} w_gi^(t) Y_i
+        / sum_{i in g,b} w_gi^(t).
+
+For a candidate predicate P, weighted removal sets matching weights to zero:
+
+    w_gi^(t,-P) = w_gi^(t) * 1{i does not satisfy P}.
+
+The calibration weights are not refitted while the candidate is scored.  At
+the start of iteration t, let D_{t-1}^S be the distance over the frozen search
+buckets and D_{t-1,-P}^S be that search distance after deleting P.  The
+weighted SDEcho extension uses
+
+    gamma_t(P)
+      = [D_{t-1,-P}^S / D_{t-1}^S]
+        * [1 + pi_A^t(P) + pi_B^t(P)],
+
+where
+
+    pi_g^t(P)
+      = sum_i w_gi^t 1{i satisfies P} / sum_i w_gi^t.
+
+All support, prevalence, and match-ESS quantities in this score are restricted
+to rows in the frozen search buckets.  For candidates satisfying the same
+support and nonempty-bucket rules, unit weights recover the ordinary
+brute-force mean-based score.  Raw and active counts and effective sample size
+are separate reliability diagnostics.  A candidate is not scored if its
+removal leaves an empty weighted search bucket.
+
+
+10. ITERATIVE ALGORITHM
+----------------------
+
+Input:
+
+    source and target data;
+    ordered buckets;
+    outcome column;
+    candidate attributes and maximum predicate order;
+    candidate-pool size and value-enumeration limit;
+    frozen intervention buckets;
+    support and weight-quality thresholds;
+    maximum number of iterations.
+
+Algorithm:
+
+    1. Initialize source and target weights to one.
+    2. Build the initial weighted sequences and distance D_0.
+    3. Run weighted SDEcho on the current pseudo-populations over the same
+       frozen buckets that are eligible for intervention.
+    4. Consider candidates in removal-score order within the configured pool.
+    5. Exclude exact previously selected predicates and identical event masks.
+    6. Add the candidate event to the accumulated constraint set.
+    7. Recompute source weights from the base weights so that every selected
+       predicate event matches the target within every intervention bucket.
+    8. Reject a candidate if calibration is infeasible, balance does not
+       converge, effective sample size is inadequate, weights are excessive,
+       or the actual balance update does not materially reduce distance.
+    9. Accept the highest-ranked feasible material candidate in that pool and
+       use its weighted population as the next baseline.
+   10. Repeat until a stopping rule is met.
+
+SDEcho is the discovery mechanism.  Actual reweighting improvement determines
+whether a proposed step is accepted.  This distinction prevents the method
+from claiming progressive composition explanation when a deletion-helpful
+predicate has a zero or negative balancing effect.
+
+
+11. REPORTED EFFECTS
+--------------------
+
+For accepted step t, let D_{t-1}^F be the full-index distance before balancing
+the new predicate and D_t^F the full-index distance after cumulatively
+recalibrating all selected predicates.
+
+The conditional step reduction is
+
+    e_t = (D_{t-1}^F - D_t^F) / D_{t-1}^F.
+
+These conditional percentages do not add.
+
+The additive original-scale path increment is
+
+    c_t = (D_{t-1}^F - D_t^F) / D_0^F.
+
+This increment belongs to the selected path: it includes adding P_t and
+recalibrating all accumulated margins.  It is not an intrinsic, order-free
+contribution of P_t.
+
+The cumulative reduction after T accepted steps is
+
+    C_T = (D_0^F - D_T^F) / D_0^F
+        = sum_{t=1}^T c_t.
+
+Every iteration records both
+
+    D_{t-1}^S:       search distance before selecting P_t;
+    D_{t-1,-P_t}^S: search distance after SDEcho removal of P_t; and
+    D_t^F:           full-index distance after balancing its prevalence.
+
+This keeps deletion influence and compositional standardization visibly
+separate.
+
+
+12. STOPPING RULES
+------------------
+
+An individual candidate is rejected when calibration is infeasible, balance
+does not converge, support or effective sample size is inadequate, weights are
+excessive, or its actual balance update is not materially positive.  The search
+then tries the next candidate in the configured pool.
+
+Iteration stops when any of the following holds:
+
+    no eligible SDEcho predicate exists;
+    no candidate in the configured pool passes every acceptance gate;
+    remaining distance is below a fixed tolerance;
+    or the maximum number of iterations is reached.
+
+Previously selected exact events are excluded to prevent cycles.  Nested
+predicates are allowed because Country=USA and Country=USA AND
+Education=Doctoral can describe different residual structure.  A nested rule
+must still add a feasible, positive balance constraint.
+
+
+13. ORDER DEPENDENCE AND INTERPRETATION
+---------------------------------------
+
+The result is a greedy conditional path, not an order-invariant allocation.
+The first intervention changes the weighted population and can change later
+rankings.  This is intentional: the user asks what matters next after a
+specific standardization.
+
+The path must be described as
+
+    first P1;
+    conditional on balancing P1, next P2;
+    conditional on balancing P1 and P2, next P3.
+
+It must not be described as a unique additive truth that would be unchanged
+under every possible ordering.  Stability should be evaluated through repeated
+sampling, alternative first-step paths, or held-out validation.
+
+
+14. SUPPORT, RELIABILITY, AND ASSUMPTIONS
+-----------------------------------------
+
+The method assumes:
+
+    the outcome and bucket definition are fixed before discovery;
+    each requested event and its complement have adequate raw, active, and
+    effective support in both source and target within every intervention
+    bucket;
+    weighted means are meaningful for the outcome;
+    remaining conditional outcomes are retained rather than transported;
+    the chosen source-to-target direction is substantively justified.
+
+Each accepted step reports:
+
+    raw predicate support in both groups;
+    weighted predicate shares;
+    balance error for all prior constraints;
+    Kish effective sample size;
+    minimum and maximum positive weights;
+    distance before balancing;
+    distance after removal;
+    distance after balancing;
+    conditional and cumulative reduction.
+
+Weights create a pseudo-population; they do not create new observed people.
+Results are conditional on observed source support and feasibility of the
+requested event-margin constraints.  The implementation is event-margin
+support-aware; it does not claim complete joint common support across every
+selected predicate.  Target-only joint combinations cannot be created by
+source weights.  Any future trimming policy must report omitted source and
+target mass and define the resulting overlap population explicitly.
+
+
+15. OUTLIERS AND OUTCOME ROBUSTNESS
+-----------------------------------
+
+Mean salary sequences can be dominated by a small upper tail.  In the real
+USA 3-5 bucket, medians were near 123000 and 125000 while means were about
+378632 and 490669, with multi-million-dollar upper-tail observations.
+
+Therefore, the final empirical evaluation should pre-specify a robust primary
+outcome or provide sensitivity analyses using a fixed transformation such as
+log salary, global winsorization, trimmed means, or medians.  The transformation
+must not be chosen separately after observing each comparison's result.
+
+
+16. SYNTHETIC GROUND TRUTH
+--------------------------
+
+The deterministic positive-control dataset contains four buckets and three
+independent binary predicate events:
+
+    P1: Country=USA
+    P2: Education=Doctoral
+    P3: RemoteWork=Remote.
+
+Source prevalences are 0.10, 0.20, and 0.25.  Target prevalences are 0.30,
+0.40, and 0.50.  Conditional salary premiums are identical between groups:
+
+    P1 premium = 60000
+    P2 premium = 35000
+    P3 premium = 16000.
+
+The target also has an irreducible 2000 shift in every bucket.  Each initial
+bucket gap is therefore
+
+    0.20*60000 + 0.20*35000 + 0.25*16000 + 2000
+      = 25000.
+
+Across four equal gaps, the exact expected distance path is
+
+    D_0 = 50000
+    after P1 balance: D_1 = 26000
+    after P2 balance: D_2 = 12000
+    after P3 balance: D_3 = 4000.
+
+The original-scale path increments are
+
+    P1: (50000-26000)/50000 = 0.48
+    P2: (26000-12000)/50000 = 0.28
+    P3: (12000-4000)/50000  = 0.16.
+
+They sum to 0.92, leaving the designed 0.08 residual.  The executable tests
+require exact recovery of the predicate order and distance path, preservation
+of all earlier constraints, deterministic output, and correct stopping when no
+remaining candidate yields a material balance improvement.
+
+
+17. CLAIM BOUNDARY
+------------------
+
+Defensible claim:
+
+    The method constructs an ordered, event-margin-support-aware
+    counterfactual explanation path by repeatedly discovering
+    removal-influential predicates and standardizing their exact prevalence
+    in the source population within the frozen intervention buckets.
+
+Claims that are not justified:
+
+    a predicate causes the sequence gap;
+    deletion and balancing estimate the same quantity;
+    the greedy order is unique;
+    the selected predicates explain unsupported populations;
+    or a large removal score is automatically a large compositional share.
+
+The central scientific output is the distinction between removal influence,
+prevalence composition, and the remaining residual under the configured
+greedy path.  Persistence after prevalence balance is consistent with
+conditional-outcome heterogeneity, but can also reflect outliers, correlated
+unbalanced structure, and denominator renormalization.
+
+The current real-data path is discovered and accepted on the same sample.  Its
+effects are exploratory in-sample descriptive quantities until stability or
+held-out evaluation is added.  The historical numerical comparisons in
+Section 5 come from the retired one-shot implementation and are retained for
+motivation; the active iterative runner does not reproduce every retired
+estimand.
